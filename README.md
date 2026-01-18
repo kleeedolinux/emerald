@@ -1,6 +1,5 @@
 # Emerald
-[![Get it on Codeberg](https://codeberg.org/Codeberg/Community/raw/branch/main/assets/badges/codeberg-badge.svg)](https://codeberg.org/emerald-lang/emerald)
-![Total stars](https://badgen.net/runkit/vladimyr/total-stars/codeberg;owner=emerald-lang;repo=emerald/github;owner=kleeedolinux;repo=emerald)
+[![Codeberg](https://img.shields.io/badge/Codeberg-primary%20repo-2185d0?logo=codeberg&logoColor=white)](https://codeberg.org/emerald-lang/emerald)
 
 This repository exists as a **[mirror](https://github.com/kleeedolinux/emerald/tree/mirror)**.
 
