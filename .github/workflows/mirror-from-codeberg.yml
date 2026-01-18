@@ -1,0 +1,27 @@
+name: Mirror from Codeberg
+
+on:
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write   
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mirror branch from Codeberg
+        run: |
+          git remote add codeberg https://codeberg.org/emerald-lang/emerald.git || true
+          git fetch codeberg
+
+          git checkout -B mirror codeberg/mirror
+          git push origin mirror --force
