@@ -5,7 +5,7 @@
 </a>
 
 
-This repository exists as a **[mirror](https://github.com/kleeedolinux/emerald/tree/mirror)**.
+This repository exists as a mirror.
 
 The primary and canonical home of Emerald is on [Codeberg](https://codeberg.org/emerald-lang/emerald).
 
@@ -37,8 +37,7 @@ Emerald is a human-written project. We want the surrounding infrastructure to re
 
 GitHub is still where many developers discover projects.
 
-For that reason, this repository exists as a **[read-only mirror](https://github.com/kleeedolinux/emerald/tree/mirror)**.
-
+For that reason, this repository exists as a mirror.
 This means:
 
 - This repository is not the source of truth
