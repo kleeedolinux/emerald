@@ -1,59 +1,26 @@
-# ---> D
 # Compiled Object files
 *.o
 *.obj
+*.ko
+*.elf
+*.slo
+*.lo
+
+# Precompiled Headers
+*.gch
+*.pch
 
 # Compiled Dynamic libraries
 *.so
+*.so.*
 *.dylib
 *.dll
 
 # Compiled Static libraries
 *.a
 *.lib
-
-# Executables
-*.exe
-
-# DUB
-.dub
-docs.json
-__dummy.html
-docs/
-
-# Code coverage
-*.lst
-
-# ---> C
-# Prerequisites
-*.d
-
-# Object files
-*.o
-*.ko
-*.obj
-*.elf
-
-# Linker output
-*.ilk
-*.map
-*.exp
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Libraries
-*.lib
-*.a
 *.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
+*.lai
 
 # Executables
 *.exe
@@ -63,52 +30,38 @@ docs/
 *.x86_64
 *.hex
 
+# Linker output
+*.ilk
+*.map
+*.exp
+
 # Debug files
 *.dSYM/
 *.su
 *.idb
 *.pdb
 
+# Prerequisites
+*.d
+
+# Fortran module files
+*.mod
+*.smod
+
 # Kernel Module Compile Results
-*.mod*
 *.cmd
+*.mod*
 .tmp_versions/
 modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
 
-# ---> C++
-# Prerequisites
-*.d
+# DUB (D language)
+.dub
+docs.json
+__dummy.html
+docs/
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
+# Code coverage
+*.lst
