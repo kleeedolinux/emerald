@@ -21,6 +21,8 @@ jobs:
           git remote remove codeberg 2>/dev/null || true
           git remote add codeberg https://codeberg.org/emerald-lang/emerald.git
           git fetch codeberg
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout main
           git merge codeberg/main -X ours --no-edit
           git checkout HEAD -- README.md
