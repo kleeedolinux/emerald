@@ -178,13 +178,13 @@ impl<'a> NameResolver<'a> {
     fn resolve_stmt(&mut self, stmt: &crate::core::ast::stmt::Stmt) {
         match stmt {
             crate::core::ast::stmt::Stmt::Let(s) => {
-                // alwys add var immediately even bfr chckng its value
-                // this allows vrbls 2 be used in later sattements
+                // require explicit type annotation for all variables
                 let type_ = if let Some(annotated_type) = &s.type_annotation {
                     crate::core::types::resolver::resolve_ast_type(annotated_type)
                 } else {
-                    // 4 untypd vrbls use a placeholder type
-                    crate::core::types::ty::Type::Primitive(crate::core::types::primitive::PrimitiveType::Int)
+                    self.error(s.span, "Variable must have explicit type annotation");
+                    // use void as error recovery type
+                    crate::core::types::ty::Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
                 };
                 
                 let symbol = Symbol {
