@@ -23,7 +23,7 @@ impl Type {
             Type::Pointer(_) => Some(std::mem::size_of::<usize>()), // ptr size
             Type::Generic(_) => None, // unknown until monomorphization
             Type::Function(_) => None, // functions dont have a size
-            Type::String => Some(std::mem::size_of::<usize>() * 3), // ptr 2 data + length + cpcty
+            Type::String => Some(std::mem::size_of::<usize>() * 2), // ptr + length
         }
     }
 
