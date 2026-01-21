@@ -4,20 +4,23 @@ use crate::core::types::resolver::resolve_ast_type;
 use crate::error::{Diagnostic, DiagnosticKind, Reporter};
 use crate::frontend::semantic::comptime::ComptimeEvaluator;
 use crate::frontend::semantic::symbol_table::SymbolTable;
+use crate::frontend::semantic::trait_resolver::TraitResolver;
 use codespan::FileId;
 
 pub struct TypeChecker<'a> {
     symbol_table: SymbolTable,
     reporter: &'a mut Reporter,
     file_id: FileId,
+    trait_resolver: TraitResolver,
 }
 
 impl<'a> TypeChecker<'a> {
     pub fn new(symbol_table: SymbolTable, reporter: &'a mut Reporter, file_id: FileId) -> Self {
         Self {
-            symbol_table,
+            symbol_table: symbol_table.clone(),
             reporter,
             file_id,
+            trait_resolver: TraitResolver::new(symbol_table),
         }
     }
 
@@ -227,9 +230,13 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::MethodCall(m) => {
-                let _receiver_type = self.check_expr(&m.receiver);
-                // method ret type would come from trait rsltn
-                Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                let receiver_type = self.check_expr(&m.receiver);
+                if let Some((_method_name, _params, return_type)) = self.trait_resolver.resolve_method_call(&receiver_type, &m.method) {
+                    return_type.clone().unwrap_or(Type::Primitive(crate::core::types::primitive::PrimitiveType::Void))
+                } else {
+                    self.error(m.span, &format!("Method '{}' not found on type", m.method));
+                    Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                }
             }
             Expr::Index(i) => {
                 let array_type = self.check_expr(&i.array);
@@ -441,6 +448,39 @@ impl<'a> TypeChecker<'a> {
                     params: Vec::new(),
                     return_type: Box::new(Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)),
                 })
+            }
+            Expr::ArrayLiteral(a) => {
+                // infer array type from elements
+                if a.elements.is_empty() {
+                    // empty array - default 2 int array
+                    Type::Array(crate::core::types::composite::ArrayType {
+                        element: Box::new(Type::Primitive(crate::core::types::primitive::PrimitiveType::Int)),
+                        size: 0,
+                    })
+                } else {
+                    // chk all elements have the same type
+                    let first_type = self.check_expr(&a.elements[0]);
+                    let mut all_same = true;
+                    for element in &a.elements[1..] {
+                        let elem_type = self.check_expr(element);
+                        if elem_type != first_type {
+                            self.error(
+                                element.span(),
+                                "Array literal elements must all have the same type",
+                            );
+                            all_same = false;
+                        }
+                    }
+                    if all_same {
+                        Type::Array(crate::core::types::composite::ArrayType {
+                            element: Box::new(first_type),
+                            size: a.elements.len(),
+                        })
+                    } else {
+                        // err case - return void
+                        Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                    }
+                }
             }
             Expr::Null => {
                 Type::Pointer(crate::core::types::pointer::PointerType::new(

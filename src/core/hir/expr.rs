@@ -21,6 +21,7 @@ pub enum HirExpr {
     Exists(HirExistsExpr),
     Closure(HirClosureExpr),
     Comptime(HirComptimeExpr),
+    ArrayLiteral(HirArrayLiteralExpr),
     Null,
 }
 
@@ -199,6 +200,13 @@ pub struct HirComptimeExpr {
     pub evaluated: Option<HirLiteralExpr>, // evaluated vl if cmptm evalutaion succeeded
 }
 
+#[derive(Debug, Clone)]
+pub struct HirArrayLiteralExpr {
+    pub elements: Vec<HirExpr>,
+    pub type_: Type,
+    pub span: Span,
+}
+
 impl HirExpr {
     pub fn span(&self) -> Span {
         match self {
@@ -218,6 +226,7 @@ impl HirExpr {
             HirExpr::Exists(e) => e.span,
             HirExpr::Closure(e) => e.span,
             HirExpr::Comptime(e) => e.span,
+            HirExpr::ArrayLiteral(e) => e.span,
             HirExpr::Null => Span::new(ByteIndex(0), ByteIndex(0)),
         }
     }
@@ -240,6 +249,7 @@ impl HirExpr {
             HirExpr::Exists(e) => &e.type_,
             HirExpr::Closure(e) => &e.type_,
             HirExpr::Comptime(e) => &e.type_,
+            HirExpr::ArrayLiteral(e) => &e.type_,
             HirExpr::Null => {
                 // ret a sttc ref 4 null
                 static NULL_TYPE: once_cell::sync::Lazy<Type> = once_cell::sync::Lazy::new(|| {

@@ -106,6 +106,18 @@ impl SymbolTable {
         }
         found_count > 1 // shadowing occrs when symbol exsts in mltpl scopes
     }
+
+    /// get all symbols from all scopes
+    /// returns a vec of (name, symbol) pairs
+    pub fn all_symbols(&self) -> Vec<(String, Symbol)> {
+        let mut symbols = Vec::new();
+        for scope in &self.scopes {
+            for (name, symbol) in scope {
+                symbols.push((name.clone(), symbol.clone()));
+            }
+        }
+        symbols
+    }
 }
 
 impl Default for SymbolTable {

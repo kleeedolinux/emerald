@@ -34,12 +34,12 @@ impl<'a> ComptimeEvaluator<'a> {
                 self.evaluate_unary(&u.op, operand, u.span)
             }
             Expr::Comptime(c) => {
-                // nstd comptime evaluate the inner expression
                 self.evaluate(&c.expr)
             }
+            Expr::Variable(v) => {
+                None
+            }
             _ => {
-                // not a constant expression
-                self.error(expr.span(), "Comptime expression must be constant");
                 None
             }
         }

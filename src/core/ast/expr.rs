@@ -19,6 +19,7 @@ pub enum Expr {
     Exists(ExistsExpr),
     Closure(ClosureExpr),
     Comptime(ComptimeExpr),
+    ArrayLiteral(ArrayLiteralExpr),
     Null,
 }
 
@@ -164,6 +165,12 @@ pub struct ComptimeExpr {
     pub span: Span,
 }
 
+#[derive(Debug, Clone)]
+pub struct ArrayLiteralExpr {
+    pub elements: Vec<Expr>,
+    pub span: Span,
+}
+
 impl Expr {
     pub fn span(&self) -> Span {
         match self {
@@ -183,6 +190,7 @@ impl Expr {
             Expr::Exists(e) => e.span,
             Expr::Closure(e) => e.span,
             Expr::Comptime(e) => e.span,
+            Expr::ArrayLiteral(e) => e.span,
             Expr::Null => Span::new(ByteIndex(0), ByteIndex(0)),
         }
     }

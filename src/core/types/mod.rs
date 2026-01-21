@@ -1,6 +1,7 @@
 pub mod composite;
 pub mod dependency;
 pub mod generic;
+pub mod module;
 pub mod pointer;
 pub mod primitive;
 pub mod resolver;

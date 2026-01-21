@@ -912,6 +912,47 @@ impl MirLowerer {
                     self.lower_expr(func, &c.expr, bb_id)
                 }
             }
+            HirExpr::ArrayLiteral(a) => {
+                // array literals need 2 be allocated and initialized
+                // 4 now we'll create a temporary local and store each element
+                let array_type = match &a.type_ {
+                    crate::core::types::ty::Type::Array(arr) => arr,
+                    _ => {
+                        // shldnt happen but handle it
+                        return Operand::Constant(Constant::Null);
+                    }
+                };
+                
+                // allocate local 4 the array
+                let array_local = func.new_local(a.type_.clone(), None);
+                let array_operand = Operand::Local(array_local);
+                
+                // store each element
+                for (i, element) in a.elements.iter().enumerate() {
+                    let element_val = self.lower_expr(func, element, bb_id);
+                    let index_operand = Operand::Constant(Constant::Int(i as i64));
+                    
+                    // get element pointer
+                    let gep_dest = func.new_local(array_type.element.as_ref().clone(), None);
+                    let gep = Instruction::Gep {
+                        dest: gep_dest,
+                        base: array_operand.clone(),
+                        index: index_operand,
+                        type_: array_type.element.as_ref().clone(),
+                    };
+                    func.basic_blocks[bb_id].instructions.push(gep);
+                    
+                    // store element at the pointer
+                    let store = Instruction::Store {
+                        dest: Operand::Local(gep_dest),
+                        source: element_val,
+                        type_: array_type.element.as_ref().clone(),
+                    };
+                    func.basic_blocks[bb_id].instructions.push(store);
+                }
+                
+                array_operand
+            }
             HirExpr::Null => Operand::Constant(Constant::Null),
         }
     }

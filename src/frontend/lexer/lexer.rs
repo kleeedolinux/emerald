@@ -79,6 +79,13 @@ impl<'a> Lexer<'a> {
                     self.make_token(TokenKind::Slash)
                 }
             }
+            '#' => {
+                // line comment
+                while self.peek() != '\n' && !self.is_at_end() {
+                    self.advance();
+                }
+                self.next_token()
+            }
             '%' => self.make_token(TokenKind::Percent),
             '!' => {
                 if self.match_char('=') {

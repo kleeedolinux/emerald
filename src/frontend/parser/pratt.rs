@@ -120,6 +120,52 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_trait_params(&mut self) -> Result<Vec<Param>, ()> {
+        if self.check(&TokenKind::LeftParen) {
+            self.advance(); // (
+            let mut params = Vec::new();
+            if !self.check(&TokenKind::RightParen) {
+                loop {
+                    let name = self.expect_identifier()?;
+                    // in traits, first param (self) can omit type
+                    if params.is_empty() && name == "self" && !self.check(&TokenKind::Colon) {
+                        // self without type - use void as placeholder, will be checked in trait checker
+                        params.push(Param {
+                            name,
+                            type_: Type::Primitive(crate::core::ast::types::PrimitiveType::Void),
+                            span: self.previous().span,
+                        });
+                        if !self.check(&TokenKind::Comma) {
+                            break;
+                        }
+                        self.advance(); // ,
+                        continue;
+                    }
+                    if !self.check(&TokenKind::Colon) {
+                        self.error("Parameter must have explicit type annotation");
+                        return Err(());
+                    }
+                    self.advance(); // :
+                    let type_ = self.parse_type()?;
+                    let span = self.previous().span;
+                    params.push(Param {
+                        name,
+                        type_,
+                        span,
+                    });
+                    if !self.check(&TokenKind::Comma) {
+                        break;
+                    }
+                    self.advance(); // ,
+                }
+            }
+            self.expect(&TokenKind::RightParen)?;
+            Ok(params)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     fn parse_params(&mut self) -> Result<Vec<Param>, ()> {
         if self.check(&TokenKind::LeftParen) {
             // parse with parentheses
@@ -322,7 +368,7 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
 
         while !self.check(&TokenKind::End) && !self.is_at_end() {
-            let field_name = self.expect_identifier()?;
+            let field_name = self.expect_identifier_or_keyword()?;
             self.expect(&TokenKind::Colon)?;
             let type_ = self.parse_type()?;
             let span = self.previous().span;
@@ -376,7 +422,7 @@ impl<'a> Parser<'a> {
     fn parse_trait_method(&mut self) -> Result<TraitMethod, ()> {
         self.advance(); // def
         let name = self.expect_identifier()?;
-        let params = self.parse_params()?;
+        let params = self.parse_trait_params()?;
         let return_type = if self.check(&TokenKind::Returns) {
             self.advance();
             Some(self.parse_type()?)
@@ -522,10 +568,19 @@ impl<'a> Parser<'a> {
         loop {
             let name = self.expect_identifier()?;
             path.push(name);
-            if !self.check(&TokenKind::Dot) {
+            if self.check(&TokenKind::Dot) {
+                self.advance(); // .
+            } else if self.check(&TokenKind::Colon) {
+                let next = self.peek();
+                if next.kind == TokenKind::Colon {
+                    self.advance(); // :
+                    self.advance(); // :
+                } else {
+                    break;
+                }
+            } else {
                 break;
             }
-            self.advance(); // 
         }
         let span = Span::new(start_span.start(), self.previous().span.end());
         Ok(Use { path, span })
@@ -575,52 +630,94 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type(&mut self) -> Result<Type, ()> {
-        match self.peek().kind {
+        let base_type = match self.peek().kind {
             TokenKind::Void => {
                 self.advance();
-                Ok(Type::Primitive(PrimitiveType::Void))
+                Type::Primitive(PrimitiveType::Void)
             }
             TokenKind::Byte => {
                 self.advance();
-                Ok(Type::Primitive(PrimitiveType::Byte))
+                Type::Primitive(PrimitiveType::Byte)
             }
             TokenKind::Int => {
                 self.advance();
-                Ok(Type::Primitive(PrimitiveType::Int))
+                Type::Primitive(PrimitiveType::Int)
             }
             TokenKind::Long => {
                 self.advance();
-                Ok(Type::Primitive(PrimitiveType::Long))
+                Type::Primitive(PrimitiveType::Long)
             }
             TokenKind::Size => {
                 self.advance();
-                Ok(Type::Primitive(PrimitiveType::Size))
+                Type::Primitive(PrimitiveType::Size)
             }
             TokenKind::Float => {
                 self.advance();
-                Ok(Type::Primitive(PrimitiveType::Float))
+                Type::Primitive(PrimitiveType::Float)
             }
             TokenKind::Bool => {
                 self.advance();
-                Ok(Type::Primitive(PrimitiveType::Bool))
+                Type::Primitive(PrimitiveType::Bool)
             }
             TokenKind::Char => {
                 self.advance();
-                Ok(Type::Primitive(PrimitiveType::Char))
+                Type::Primitive(PrimitiveType::Char)
             }
             TokenKind::String => {
                 self.advance();
-                Ok(Type::Named(NamedType { name: "string".to_string(), generics: Vec::new() }))
+                Type::Named(NamedType { name: "string".to_string(), generics: Vec::new() })
             }
             TokenKind::Ref => {
                 self.advance();
                 let pointee = self.parse_type()?;
-                Ok(Type::ref_(pointee))
+                // chk if array type follows: ref int[10]
+                if self.check(&TokenKind::LeftBracket) {
+                    self.advance(); // [
+                    let size = if matches!(self.peek().kind, TokenKind::IntLiteral(_)) {
+                        if let TokenKind::IntLiteral(n) = self.advance().kind.clone() {
+                            Some(n as usize)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    self.expect(&TokenKind::RightBracket)?;
+                    Type::Array(ArrayType {
+                        element: Box::new(Type::ref_(pointee)),
+                        size,
+                    })
+                } else {
+                    Type::ref_(pointee)
+                }
             }
             TokenKind::RefNullable => {
                 self.advance();
                 let pointee = self.parse_type()?;
-                Ok(Type::ref_nullable(pointee))
+                // chk if array type follows: ref? int[10]
+                if self.check(&TokenKind::LeftBracket) {
+                    self.advance(); // [
+                    let size = if matches!(self.peek().kind, TokenKind::IntLiteral(_)) {
+                        if let TokenKind::IntLiteral(n) = self.advance().kind.clone() {
+                            Some(n as usize)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    self.expect(&TokenKind::RightBracket)?;
+                    Type::Array(ArrayType {
+                        element: Box::new(Type::ref_nullable(pointee)),
+                        size,
+                    })
+                } else {
+                    Type::ref_nullable(pointee)
+                }
+            }
+            TokenKind::LeftBracket => {
+                self.error("Unexpected [ in type position");
+                return Err(());
             }
             TokenKind::Identifier(_) => {
                 let name = if let TokenKind::Identifier(n) = self.advance().kind.clone() {
@@ -628,31 +725,94 @@ impl<'a> Parser<'a> {
                 } else {
                     return Err(());
                 };
-                let generics = if self.check(&TokenKind::LeftBracket) {
+                // chk if this is an array type: MyType[5] or generic type List[int]
+                if self.check(&TokenKind::LeftBracket) {
                     self.advance(); // [
-                    let mut types = Vec::new();
-                    loop {
-                        if self.check(&TokenKind::RightBracket) {
-                            break;
+                    // chk if its an array size (int literal) or generic params (types)
+                    if matches!(self.peek().kind, TokenKind::IntLiteral(_)) {
+                        // array type: MyType[10]
+                        let size = if let TokenKind::IntLiteral(n) = self.advance().kind.clone() {
+                            Some(n as usize)
+                        } else {
+                            None
+                        };
+                        self.expect(&TokenKind::RightBracket)?;
+                        let element_type = if name == "string" {
+                            Type::Named(NamedType { name: "string".to_string(), generics: Vec::new() })
+                        } else {
+                            Type::Named(NamedType { name, generics: Vec::new() })
+                        };
+                        Type::Array(ArrayType {
+                            element: Box::new(element_type),
+                            size,
+                        })
+                    } else {
+                        // generic type: List[int, bool]
+                        let mut types = Vec::new();
+                        loop {
+                            if self.check(&TokenKind::RightBracket) {
+                                break;
+                            }
+                            types.push(self.parse_type()?);
+                            if !self.check(&TokenKind::Comma) {
+                                break;
+                            }
+                            self.advance(); // 
                         }
-                        types.push(self.parse_type()?);
-                        if !self.check(&TokenKind::Comma) {
-                            break;
+                        self.expect(&TokenKind::RightBracket)?;
+                        // chk if array type follows: List[int][10]
+                        if self.check(&TokenKind::LeftBracket) {
+                            self.advance(); // [
+                            let size = if matches!(self.peek().kind, TokenKind::IntLiteral(_)) {
+                                if let TokenKind::IntLiteral(n) = self.advance().kind.clone() {
+                                    Some(n as usize)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            self.expect(&TokenKind::RightBracket)?;
+                            Type::Array(ArrayType {
+                                element: Box::new(Type::Named(NamedType { name, generics: types })),
+                                size,
+                            })
+                        } else {
+                            Type::Named(NamedType { name, generics: types })
                         }
-                        self.advance(); // 
                     }
-                    self.expect(&TokenKind::RightBracket)?;
-                    types
                 } else {
-                    Vec::new()
-                };
-                Ok(Type::Named(NamedType { name, generics }))
+                    Type::Named(NamedType { name, generics: Vec::new() })
+                }
             }
             _ => {
                 self.error("Expected type");
-                Err(())
+                return Err(());
             }
-        }
+        };
+        
+        // chk if array type follows the base type: int[10], string[5], etc
+        let final_type = if self.check(&TokenKind::LeftBracket) {
+            self.advance(); // [
+            let size = if matches!(self.peek().kind, TokenKind::IntLiteral(_)) {
+                if let TokenKind::IntLiteral(n) = self.advance().kind.clone() {
+                    Some(n as usize)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            self.expect(&TokenKind::RightBracket)?;
+            Type::Array(ArrayType {
+                element: Box::new(base_type),
+                size,
+            })
+        } else {
+            base_type
+        };
+        
+        Ok(final_type)
     }
 
     fn parse_block_stmts(&mut self) -> Result<Vec<Stmt>, ()> {
@@ -959,6 +1119,26 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expression()?;
                 self.expect(&TokenKind::RightParen)?;
                 Ok(expr)
+            }
+            TokenKind::LeftBracket => {
+                // array literal: [expr1, expr2, ...]
+                let start_span = self.advance().span; // [
+                let mut elements = Vec::new();
+                if !self.check(&TokenKind::RightBracket) {
+                    loop {
+                        elements.push(self.parse_expression()?);
+                        if !self.check(&TokenKind::Comma) {
+                            break;
+                        }
+                        self.advance(); // ,
+                    }
+                }
+                self.expect(&TokenKind::RightBracket)?;
+                let span = Span::new(start_span.start(), self.previous().span.end());
+                Ok(Expr::ArrayLiteral(ArrayLiteralExpr {
+                    elements,
+                    span,
+                }))
             }
             TokenKind::LeftBrace => {
                 let start_span = self.advance().span; // {
@@ -1410,6 +1590,44 @@ impl<'a> Parser<'a> {
         } else {
             self.error("Expected identifier");
             Err(())
+        }
+    }
+
+    fn expect_identifier_or_keyword(&mut self) -> Result<String, ()> {
+        match &self.peek().kind {
+            TokenKind::Identifier(name) => {
+                let name = name.clone();
+                self.advance();
+                Ok(name)
+            }
+            TokenKind::Size => {
+                self.advance();
+                Ok("size".to_string())
+            }
+            TokenKind::Int => {
+                self.advance();
+                Ok("int".to_string())
+            }
+            TokenKind::Float => {
+                self.advance();
+                Ok("float".to_string())
+            }
+            TokenKind::Bool => {
+                self.advance();
+                Ok("bool".to_string())
+            }
+            TokenKind::String => {
+                self.advance();
+                Ok("string".to_string())
+            }
+            TokenKind::Void => {
+                self.advance();
+                Ok("void".to_string())
+            }
+            _ => {
+                self.error("Expected identifier");
+                Err(())
+            }
         }
     }
 

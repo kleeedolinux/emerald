@@ -76,6 +76,11 @@ impl<'a> BorrowChecker<'a> {
                     self.check_expr(arg);
                 }
             }
+            Expr::ArrayLiteral(a) => {
+                for element in &a.elements {
+                    self.check_expr(element);
+                }
+            }
             _ => {}
         }
     }

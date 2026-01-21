@@ -35,6 +35,10 @@ impl Reporter {
     pub fn files(&self) -> &Files<String> {
         &self.files
     }
+
+    pub fn files_mut(&mut self) -> &mut Files<String> {
+        &mut self.files
+    }
 }
 
 impl Default for Reporter {

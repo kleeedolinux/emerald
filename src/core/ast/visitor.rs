@@ -23,6 +23,7 @@ pub trait AstVisitor {
             Expr::Exists(e) => self.visit_exists(e),
             Expr::Closure(e) => self.visit_closure(e),
             Expr::Comptime(e) => self.visit_comptime(e),
+            Expr::ArrayLiteral(e) => self.visit_array_literal(e),
             Expr::Null => self.visit_null(),
         }
     }
@@ -122,6 +123,13 @@ pub trait AstVisitor {
 
     fn visit_comptime(&mut self, expr: &crate::core::ast::expr::ComptimeExpr) -> Self::Result {
         self.visit_expr(&expr.expr);
+        unimplemented!()
+    }
+
+    fn visit_array_literal(&mut self, expr: &crate::core::ast::expr::ArrayLiteralExpr) -> Self::Result {
+        for element in &expr.elements {
+            self.visit_expr(element);
+        }
         unimplemented!()
     }
 

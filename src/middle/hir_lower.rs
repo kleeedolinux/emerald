@@ -598,6 +598,25 @@ impl HirLowerer {
                 })
             }
             Expr::Null => HirExpr::Null,
+            Expr::ArrayLiteral(a) => {
+                let elements: Vec<HirExpr> = a.elements.iter().map(|e| self.lower_expr(e)).collect();
+                // infer array type from elements
+                let element_type = if let Some(first) = elements.first() {
+                    first.type_().clone()
+                } else {
+                    // empty array - use int as default
+                    ResolvedType::Primitive(crate::core::types::primitive::PrimitiveType::Int)
+                };
+                let array_type = ResolvedType::Array(crate::core::types::composite::ArrayType {
+                    element: Box::new(element_type),
+                    size: elements.len(),
+                });
+                HirExpr::ArrayLiteral(HirArrayLiteralExpr {
+                    elements,
+                    type_: array_type,
+                    span: a.span,
+                })
+            }
         }
     }
 

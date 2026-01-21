@@ -6,3 +6,4 @@ pub mod syntax_tests;
 pub mod hir_tests;
 pub mod mir_tests;
 pub mod output_tests;
+pub mod module_tests;
