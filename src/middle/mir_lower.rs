@@ -43,7 +43,26 @@ impl MirLowerer {
             self.lower_stmts(&mut mir_func, body, entry_block);
         }
 
+        // add implicit return if entry block or any block doesn't have terminator
+        self.add_implicit_returns(&mut mir_func);
+
         mir_func
+    }
+
+    // add implicit returns 2 blocks w/o terminators
+    fn add_implicit_returns(&mut self, func: &mut MirFunction) {
+        let mut blocks_needing_return = Vec::new();
+        for (bb_id, bb) in func.basic_blocks.iter().enumerate() {
+            if !bb.has_terminator() {
+                blocks_needing_return.push(bb_id);
+            }
+        }
+        for bb_id in blocks_needing_return {
+            let bb_mut = func.get_block_mut(bb_id).unwrap();
+            bb_mut.add_instruction(Instruction::Ret {
+                value: None,
+            });
+        }
     }
 
     fn lower_stmts(&mut self, func: &mut MirFunction, stmts: &[HirStmt], bb_id: usize) {
@@ -78,6 +97,91 @@ impl MirLowerer {
                         return;
                     }
                     let local = func.new_local(s.type_.clone(), Some(s.name.clone()));
+                    // try 2 store directly if value is simple op
+                    if let HirExpr::Binary(b) = value {
+                        if !func.block_has_terminator(bb_id) {
+                            let left = self.lower_expr(func, &b.left, bb_id);
+                            let right = self.lower_expr(func, &b.right, bb_id);
+                            let bb = func.get_block_mut(bb_id).unwrap();
+                            
+                            let inst = match b.op {
+                                HirBinaryOp::Add => Instruction::Add {
+                                    dest: local,
+                                    left,
+                                    right,
+                                    type_: b.type_.clone(),
+                                },
+                                HirBinaryOp::Sub => Instruction::Sub {
+                                    dest: local,
+                                    left,
+                                    right,
+                                    type_: b.type_.clone(),
+                                },
+                                HirBinaryOp::Mul => Instruction::Mul {
+                                    dest: local,
+                                    left,
+                                    right,
+                                    type_: b.type_.clone(),
+                                },
+                                HirBinaryOp::Div => Instruction::Div {
+                                    dest: local,
+                                    left,
+                                    right,
+                                    type_: b.type_.clone(),
+                                },
+                                HirBinaryOp::Mod => Instruction::Mod {
+                                    dest: local,
+                                    left,
+                                    right,
+                                    type_: b.type_.clone(),
+                                },
+                                HirBinaryOp::Eq => Instruction::Eq { dest: local, left, right },
+                                HirBinaryOp::Ne => Instruction::Ne { dest: local, left, right },
+                                HirBinaryOp::Lt => Instruction::Lt { dest: local, left, right },
+                                HirBinaryOp::Le => Instruction::Le { dest: local, left, right },
+                                HirBinaryOp::Gt => Instruction::Gt { dest: local, left, right },
+                                HirBinaryOp::Ge => Instruction::Ge { dest: local, left, right },
+                                HirBinaryOp::And => Instruction::And { dest: local, left, right },
+                                HirBinaryOp::Or => Instruction::Or { dest: local, left, right },
+                            };
+                            bb.add_instruction(inst);
+                            return;
+                        }
+                    } else if let HirExpr::Unary(u) = value {
+                        if !func.block_has_terminator(bb_id) {
+                            let operand = self.lower_expr(func, &u.expr, bb_id);
+                            let bb = func.get_block_mut(bb_id).unwrap();
+                            
+                            let inst = match u.op {
+                                HirUnaryOp::Neg => Instruction::Sub {
+                                    dest: local,
+                                    left: Operand::Constant(Constant::Int(0)),
+                                    right: operand,
+                                    type_: u.type_.clone(),
+                                },
+                                HirUnaryOp::Not => Instruction::Not { dest: local, operand },
+                            };
+                            bb.add_instruction(inst);
+                            return;
+                        }
+                    } else if let HirExpr::Literal(l) = value {
+                        // literals can be stored directly
+                        let constant = match &l.kind {
+                            HirLiteralKind::Int(n) => Constant::Int(*n),
+                            HirLiteralKind::Float(n) => Constant::Float(*n),
+                            HirLiteralKind::Bool(b) => Constant::Bool(*b),
+                            HirLiteralKind::Char(c) => Constant::Char(*c),
+                            HirLiteralKind::String(s) => Constant::String(s.clone()),
+                        };
+                        let bb = func.get_block_mut(bb_id).unwrap();
+                        bb.add_instruction(Instruction::Copy {
+                            dest: local,
+                            source: Operand::Constant(constant),
+                            type_: s.type_.clone(),
+                        });
+                        return;
+                    }
+                    // fallback: normal copy
                     let operand = self.lower_expr(func, value, bb_id);
                     let bb = func.get_block_mut(bb_id).unwrap();
                     bb.add_instruction(Instruction::Copy {
@@ -538,6 +642,80 @@ impl MirLowerer {
             }
             HirExpr::Assignment(a) => {
                 let target = self.lower_expr(func, &a.target, bb_id);
+                // try 2 store directly 2 target if value is simple op
+                if let Some(target_local) = self.get_local_from_operand(&target) {
+                    // if target is a local we can store directly
+                    if let HirExpr::Binary(b) = &*a.value {
+                        // lower binary op directly 2 target local
+                        if !func.block_has_terminator(bb_id) {
+                            let left = self.lower_expr(func, &b.left, bb_id);
+                            let right = self.lower_expr(func, &b.right, bb_id);
+                            let bb = func.get_block_mut(bb_id).unwrap();
+                            
+                            let inst = match b.op {
+                                HirBinaryOp::Add => Instruction::Add {
+                                    dest: target_local,
+                                    left,
+                                    right,
+                                    type_: b.type_.clone(),
+                                },
+                                HirBinaryOp::Sub => Instruction::Sub {
+                                    dest: target_local,
+                                    left,
+                                    right,
+                                    type_: b.type_.clone(),
+                                },
+                                HirBinaryOp::Mul => Instruction::Mul {
+                                    dest: target_local,
+                                    left,
+                                    right,
+                                    type_: b.type_.clone(),
+                                },
+                                HirBinaryOp::Div => Instruction::Div {
+                                    dest: target_local,
+                                    left,
+                                    right,
+                                    type_: b.type_.clone(),
+                                },
+                                HirBinaryOp::Mod => Instruction::Mod {
+                                    dest: target_local,
+                                    left,
+                                    right,
+                                    type_: b.type_.clone(),
+                                },
+                                HirBinaryOp::Eq => Instruction::Eq { dest: target_local, left, right },
+                                HirBinaryOp::Ne => Instruction::Ne { dest: target_local, left, right },
+                                HirBinaryOp::Lt => Instruction::Lt { dest: target_local, left, right },
+                                HirBinaryOp::Le => Instruction::Le { dest: target_local, left, right },
+                                HirBinaryOp::Gt => Instruction::Gt { dest: target_local, left, right },
+                                HirBinaryOp::Ge => Instruction::Ge { dest: target_local, left, right },
+                                HirBinaryOp::And => Instruction::And { dest: target_local, left, right },
+                                HirBinaryOp::Or => Instruction::Or { dest: target_local, left, right },
+                            };
+                            bb.add_instruction(inst);
+                            return Operand::Constant(Constant::Null);
+                        }
+                    } else if let HirExpr::Unary(u) = &*a.value {
+                        // lower unary op directly 2 target local
+                        if !func.block_has_terminator(bb_id) {
+                            let operand = self.lower_expr(func, &u.expr, bb_id);
+                            let bb = func.get_block_mut(bb_id).unwrap();
+                            
+                            let inst = match u.op {
+                                HirUnaryOp::Neg => Instruction::Sub {
+                                    dest: target_local,
+                                    left: Operand::Constant(Constant::Int(0)),
+                                    right: operand,
+                                    type_: u.type_.clone(),
+                                },
+                                HirUnaryOp::Not => Instruction::Not { dest: target_local, operand },
+                            };
+                            bb.add_instruction(inst);
+                            return Operand::Constant(Constant::Null);
+                        }
+                    }
+                }
+                // fallback: normal lowering w/ store
                 let value = self.lower_expr(func, &a.value, bb_id);
                 let bb = func.get_block_mut(bb_id).unwrap();
                 bb.add_instruction(Instruction::Store {
@@ -737,6 +915,13 @@ impl MirLowerer {
             HirExpr::Null => Operand::Constant(Constant::Null),
         }
     }
-}
 
-use crate::core::mir::operand::{Operand, Constant};
+    // helper 2 extract local from operand if it's a local
+    fn get_local_from_operand(&self, op: &Operand) -> Option<Local> {
+        if let Operand::Local(l) = op {
+            Some(*l)
+        } else {
+            None
+        }
+    }
+}
