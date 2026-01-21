@@ -1,0 +1,7 @@
+pub mod lexer_tests;
+pub mod parser_tests;
+pub mod type_tests;
+pub mod semantic_tests;
+pub mod hir_tests;
+pub mod mir_tests;
+pub mod output_tests;
