@@ -1,8 +1,9 @@
-use crate::core::ast::Ast;
+use crate::core::ast::{Ast, Item};
 use crate::core::types::module::ModuleDependencyGraph;
 use crate::error::Reporter;
 use crate::frontend::semantic::borrow_checker::BorrowChecker;
 use crate::frontend::semantic::collector::SymbolCollector;
+use crate::frontend::semantic::ffi::FfiChecker;
 use crate::frontend::semantic::module_registry::ModuleRegistry;
 use crate::frontend::semantic::module_resolver::ModuleResolver;
 use crate::frontend::semantic::symbol_table::SymbolTable;
@@ -47,6 +48,14 @@ impl<'a> SemanticAnalyzer<'a> {
         // pass 4: check trait implementations
         let mut trait_checker = TraitChecker::new(&symbol_table, ast, self.reporter, self.file_id);
         trait_checker.check_all_impls(ast);
+
+        // pass 5: check foreign functions
+        for item in &ast.items {
+            if let Item::Foreign(f) = item {
+                let mut ffi_checker = FfiChecker::new(&symbol_table, self.reporter, self.file_id);
+                ffi_checker.check_foreign(f);
+            }
+        }
 
         // borrow checking
         let mut borrow_checker = BorrowChecker::new(self.reporter, self.file_id);
