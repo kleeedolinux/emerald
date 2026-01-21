@@ -120,6 +120,52 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_trait_params(&mut self) -> Result<Vec<Param>, ()> {
+        if self.check(&TokenKind::LeftParen) {
+            self.advance(); // (
+            let mut params = Vec::new();
+            if !self.check(&TokenKind::RightParen) {
+                loop {
+                    let name = self.expect_identifier()?;
+                    // in traits, first param (self) can omit type
+                    if params.is_empty() && name == "self" && !self.check(&TokenKind::Colon) {
+                        // self without type - use void as placeholder, will be checked in trait checker
+                        params.push(Param {
+                            name,
+                            type_: Type::Primitive(crate::core::ast::types::PrimitiveType::Void),
+                            span: self.previous().span,
+                        });
+                        if !self.check(&TokenKind::Comma) {
+                            break;
+                        }
+                        self.advance(); // ,
+                        continue;
+                    }
+                    if !self.check(&TokenKind::Colon) {
+                        self.error("Parameter must have explicit type annotation");
+                        return Err(());
+                    }
+                    self.advance(); // :
+                    let type_ = self.parse_type()?;
+                    let span = self.previous().span;
+                    params.push(Param {
+                        name,
+                        type_,
+                        span,
+                    });
+                    if !self.check(&TokenKind::Comma) {
+                        break;
+                    }
+                    self.advance(); // ,
+                }
+            }
+            self.expect(&TokenKind::RightParen)?;
+            Ok(params)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     fn parse_params(&mut self) -> Result<Vec<Param>, ()> {
         if self.check(&TokenKind::LeftParen) {
             // parse with parentheses
@@ -322,7 +368,7 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
 
         while !self.check(&TokenKind::End) && !self.is_at_end() {
-            let field_name = self.expect_identifier()?;
+            let field_name = self.expect_identifier_or_keyword()?;
             self.expect(&TokenKind::Colon)?;
             let type_ = self.parse_type()?;
             let span = self.previous().span;
@@ -376,7 +422,7 @@ impl<'a> Parser<'a> {
     fn parse_trait_method(&mut self) -> Result<TraitMethod, ()> {
         self.advance(); // def
         let name = self.expect_identifier()?;
-        let params = self.parse_params()?;
+        let params = self.parse_trait_params()?;
         let return_type = if self.check(&TokenKind::Returns) {
             self.advance();
             Some(self.parse_type()?)
@@ -522,10 +568,19 @@ impl<'a> Parser<'a> {
         loop {
             let name = self.expect_identifier()?;
             path.push(name);
-            if !self.check(&TokenKind::Dot) {
+            if self.check(&TokenKind::Dot) {
+                self.advance(); // .
+            } else if self.check(&TokenKind::Colon) {
+                let next = self.peek();
+                if next.kind == TokenKind::Colon {
+                    self.advance(); // :
+                    self.advance(); // :
+                } else {
+                    break;
+                }
+            } else {
                 break;
             }
-            self.advance(); // 
         }
         let span = Span::new(start_span.start(), self.previous().span.end());
         Ok(Use { path, span })
@@ -1535,6 +1590,44 @@ impl<'a> Parser<'a> {
         } else {
             self.error("Expected identifier");
             Err(())
+        }
+    }
+
+    fn expect_identifier_or_keyword(&mut self) -> Result<String, ()> {
+        match &self.peek().kind {
+            TokenKind::Identifier(name) => {
+                let name = name.clone();
+                self.advance();
+                Ok(name)
+            }
+            TokenKind::Size => {
+                self.advance();
+                Ok("size".to_string())
+            }
+            TokenKind::Int => {
+                self.advance();
+                Ok("int".to_string())
+            }
+            TokenKind::Float => {
+                self.advance();
+                Ok("float".to_string())
+            }
+            TokenKind::Bool => {
+                self.advance();
+                Ok("bool".to_string())
+            }
+            TokenKind::String => {
+                self.advance();
+                Ok("string".to_string())
+            }
+            TokenKind::Void => {
+                self.advance();
+                Ok("void".to_string())
+            }
+            _ => {
+                self.error("Expected identifier");
+                Err(())
+            }
         }
     }
 

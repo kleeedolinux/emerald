@@ -6,6 +6,7 @@ use crate::frontend::semantic::collector::SymbolCollector;
 use crate::frontend::semantic::module_registry::ModuleRegistry;
 use crate::frontend::semantic::module_resolver::ModuleResolver;
 use crate::frontend::semantic::symbol_table::SymbolTable;
+use crate::frontend::semantic::trait_checker::TraitChecker;
 use crate::frontend::semantic::type_checker::TypeChecker;
 use crate::frontend::semantic::type_resolver::TypeResolver;
 use codespan::FileId;
@@ -43,6 +44,10 @@ impl<'a> SemanticAnalyzer<'a> {
         let mut type_checker = TypeChecker::new(symbol_table.clone(), self.reporter, self.file_id);
         type_checker.check(ast);
 
+        // pass 4: check trait implementations
+        let mut trait_checker = TraitChecker::new(&symbol_table, ast, self.reporter, self.file_id);
+        trait_checker.check_all_impls(ast);
+
         // borrow checking
         let mut borrow_checker = BorrowChecker::new(self.reporter, self.file_id);
         borrow_checker.check(ast);
@@ -55,6 +60,11 @@ impl<'a> SemanticAnalyzer<'a> {
         // collect all require statements first
         let mut requires = Vec::new();
         self.collect_requires(ast, &mut requires);
+
+        // if no requires, skip module resolution
+        if requires.is_empty() {
+            return;
+        }
 
         // add current module 2 dependency graph
         let current_path = self.reporter.files().name(self.file_id).to_string_lossy().to_string();

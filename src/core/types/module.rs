@@ -91,19 +91,18 @@ impl ModuleDependencyGraph {
     pub fn topological_sort(&self) -> Result<Vec<String>, Vec<String>> {
         let mut in_degree = HashMap::new();
 
-        // initialize in degree 4 all modules
+        // initialize in degree 4 all modules (count of dependencies each module has)
         for module in &self.modules {
             in_degree.insert(module.clone(), 0);
         }
 
-        // calculate in degrees
-        for deps in self.dependencies.values() {
-            for dep in deps {
-                *in_degree.entry(dep.clone()).or_insert(0) += 1;
-            }
+        // calculate in degrees - how many things each module depends on
+        for (module, deps) in &self.dependencies {
+            let count = deps.len();
+            in_degree.insert(module.clone(), count);
         }
 
-        // kahn's algorithm
+        // kahn's algorithm - start w/ modules that have no dependencies
         let mut queue = VecDeque::new();
         for (module, degree) in &in_degree {
             if *degree == 0 {
@@ -115,12 +114,13 @@ impl ModuleDependencyGraph {
         while let Some(module) = queue.pop_front() {
             result.push(module.clone());
 
-            if let Some(deps) = self.dependencies.get(&module) {
-                for dep in deps {
-                    if let Some(degree) = in_degree.get_mut(dep) {
+            // find modules that depend on this one and decrement their in-degree
+            for (other_module, deps) in &self.dependencies {
+                if deps.contains(&module) {
+                    if let Some(degree) = in_degree.get_mut(other_module) {
                         *degree -= 1;
                         if *degree == 0 {
-                            queue.push_back(dep.clone());
+                            queue.push_back(other_module.clone());
                         }
                     }
                 }
@@ -187,11 +187,13 @@ mod tests {
     #[test]
     fn test_topological_sort() {
         let mut graph = ModuleDependencyGraph::new();
+        graph.add_module("a".to_string());
+        graph.add_module("b".to_string());
+        graph.add_module("c".to_string());
         graph.add_dependency("a".to_string(), "b".to_string());
         graph.add_dependency("b".to_string(), "c".to_string());
 
         let order = graph.topological_sort().unwrap();
-        // c should come before b, b before a
         let c_pos = order.iter().position(|m| m == "c").unwrap();
         let b_pos = order.iter().position(|m| m == "b").unwrap();
         let a_pos = order.iter().position(|m| m == "a").unwrap();

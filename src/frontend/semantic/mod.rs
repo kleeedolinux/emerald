@@ -6,6 +6,8 @@ pub mod module_registry;
 pub mod module_resolver;
 pub mod resolver;
 pub mod symbol_table;
+pub mod trait_checker;
+pub mod trait_resolver;
 pub mod type_checker;
 pub mod type_resolver;
 
@@ -14,5 +16,7 @@ pub use collector::SymbolCollector;
 pub use comptime::{ComptimeEvaluator, ComptimeValue};
 pub use module_registry::ModuleRegistry;
 pub use module_resolver::ModuleResolver;
+pub use trait_checker::TraitChecker;
+pub use trait_resolver::TraitResolver;
 pub use type_resolver::TypeResolver;
 pub use symbol_table::{Symbol, SymbolKind, SymbolTable};
