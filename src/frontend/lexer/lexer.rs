@@ -122,6 +122,7 @@ impl<'a> Lexer<'a> {
                     self.error_token("Unexpected character '&'")
                 }
             }
+            '@' => self.make_token(TokenKind::At),
             '?' => {
                 if self.peek() == '?' {
                     // chk 4 exists?
