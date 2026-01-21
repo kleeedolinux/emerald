@@ -21,6 +21,9 @@ impl<'a> SymbolCollector<'a> {
     }
 
     pub fn collect_symbols(&mut self, ast: &Ast) -> SymbolTable {
+        // add builtin functions
+        self.add_builtins();
+        
         for item in &ast.items {
             self.collect_item(item);
         }
@@ -29,6 +32,24 @@ impl<'a> SymbolCollector<'a> {
             self.symbol_table.exit_scope();
         }
         self.symbol_table.clone()
+    }
+
+    fn add_builtins(&mut self) {
+        use crate::core::types::ty::Type;
+        use crate::core::types::primitive::PrimitiveType;
+        use codespan::Span;
+        
+        // print function: print(msg : string) -> void
+        let print_symbol = Symbol {
+            name: "print".to_string(),
+            kind: SymbolKind::Function {
+                params: vec![Type::String],
+                return_type: Some(Type::Primitive(PrimitiveType::Void)),
+            },
+            span: Span::new(0, 0), // builtin, no span
+            defined: true,
+        };
+        let _ = self.symbol_table.define("print".to_string(), print_symbol);
     }
 
     fn collect_item(&mut self, item: &Item) {
@@ -115,14 +136,13 @@ impl<'a> SymbolCollector<'a> {
                 self.symbol_table.exit_scope();
             }
             Item::Global(g) => {
-                // collect glbl name w/ placeholder type
+                // collect glbl name w/ resolved type (type is in AST)
+                let type_ = crate::core::types::resolver::resolve_ast_type(&g.type_);
                 let symbol = Symbol {
                     name: g.name.clone(),
                     kind: SymbolKind::Variable {
                         mutable: g.mutable,
-                        type_: crate::core::types::ty::Type::Primitive(
-                            crate::core::types::primitive::PrimitiveType::Void,
-                        ), // placeholder rslvd in pass 2
+                        type_,
                     },
                     span: g.span,
                     defined: true,

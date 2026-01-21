@@ -5,6 +5,22 @@ use crate::frontend::semantic::SemanticAnalyzer;
 use crate::middle::{HirLowerer, MirLowerer};
 use codespan::Files;
 
+fn print_diagnostics(reporter: &Reporter, files: &Files<String>) {
+    for diag in reporter.diagnostics() {
+        eprintln!("[{:?}] {:?}: {}", diag.kind, diag.severity, diag.message);
+        let source = files.source(diag.file_id);
+        let start = diag.span.start().to_usize();
+        let end = diag.span.end().to_usize();
+        if start < source.len() && end <= source.len() {
+            let snippet = &source[start..end];
+            eprintln!("  at: {:?}", snippet);
+        }
+        for note in &diag.notes {
+            eprintln!("  note: {}", note);
+        }
+    }
+}
+
 fn lower_to_mir(source: &str) -> (Vec<crate::core::mir::MirFunction>, Reporter) {
     let mut files = Files::new();
     let file_id = files.add("test.em", source.to_string());
@@ -27,6 +43,10 @@ fn lower_to_mir(source: &str) -> (Vec<crate::core::mir::MirFunction>, Reporter) 
     
     let mut mir_lowerer = MirLowerer::new();
     let mir_functions = mir_lowerer.lower(&hir);
+    
+    if reporter.has_errors() {
+        print_diagnostics(&reporter, &files);
+    }
     
     (mir_functions, reporter)
 }

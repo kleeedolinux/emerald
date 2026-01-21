@@ -101,6 +101,10 @@ impl<'a> Parser<'a> {
             // fn body w/ statements until end
             Some(self.parse_stmts_until_end()?)
         } else {
+            // Empty body - if we're at End, consume it
+            if self.check(&TokenKind::End) {
+                self.advance();
+            }
             None
         };
 
@@ -117,23 +121,148 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, ()> {
-        if !self.check(&TokenKind::LeftParen) {
-            return Ok(Vec::new());
-        }
-        self.advance(); // (
-
-        let mut params = Vec::new();
-        if !self.check(&TokenKind::RightParen) {
-            loop {
-                let name = self.expect_identifier()?;
-                let type_ = if self.check(&TokenKind::Colon) {
+        if self.check(&TokenKind::LeftParen) {
+            // parse with parentheses
+            self.advance(); // (
+            let mut params = Vec::new();
+            if !self.check(&TokenKind::RightParen) {
+                loop {
+                    let name = self.expect_identifier()?;
+                    // require explicit type annotation for all parameters
+                    if !self.check(&TokenKind::Colon) {
+                        self.error("Parameter must have explicit type annotation");
+                        return Err(());
+                    }
                     self.advance(); // :
-                    self.parse_type()?
-                } else {
-                    // 4 trait methods type can be omttd
-                    // use void as placeholder will be resolved drng smntc anlyss
-                    Type::Primitive(crate::core::ast::types::PrimitiveType::Void)
-                };
+                    let type_ = self.parse_type()?;
+                    let span = self.previous().span;
+                    params.push(Param {
+                        name,
+                        type_,
+                        span,
+                    });
+
+                    if !self.check(&TokenKind::Comma) {
+                        break;
+                    }
+                    self.advance(); // ,
+                }
+            }
+            self.expect(&TokenKind::RightParen)?;
+            Ok(params)
+        } else {
+            // try to parse params without parentheses
+            // First check if we're definitely not in params (see returns, uses, {, end, or statement keywords)
+            if self.check(&TokenKind::Returns)
+                || self.check(&TokenKind::Uses)
+                || self.check(&TokenKind::LeftBrace)
+                || self.check(&TokenKind::End)
+                || self.check(&TokenKind::If)
+                || self.check(&TokenKind::While)
+                || self.check(&TokenKind::For)
+                || self.check(&TokenKind::Return)
+                || self.check(&TokenKind::Mut)
+                || self.check(&TokenKind::Comptime)
+                || self.is_at_end()
+            {
+                return Ok(Vec::new());
+            }
+            
+            // Check if next token is identifier followed by colon
+            let looks_like_param = matches!(self.peek().kind, TokenKind::Identifier(_))
+                && self.current + 1 < self.tokens.len()
+                && matches!(self.tokens[self.current + 1].kind, TokenKind::Colon);
+            
+            if !looks_like_param {
+                // If we see = or other statement starters, it's not a param
+                if self.check(&TokenKind::Equal) {
+                    return Ok(Vec::new());
+                }
+                // If we see an identifier but not followed by colon, it's not a param
+                if matches!(self.peek().kind, TokenKind::Identifier(_)) {
+                    return Ok(Vec::new());
+                }
+                // If we see a literal, expression starter, or other non-parameter token, it's not a param
+                // Just return empty params instead of erroring
+                return Ok(Vec::new());
+            }
+            
+            // parse parameters until we hit returns, uses, {, =, or end
+            let mut params = Vec::new();
+            loop {
+                // check if we've hit a terminator
+                if self.check(&TokenKind::Returns)
+                    || self.check(&TokenKind::Uses)
+                    || self.check(&TokenKind::LeftBrace)
+                    || self.check(&TokenKind::Equal)
+                    || self.check(&TokenKind::End)
+                    || self.is_at_end()
+                {
+                    break;
+                }
+                
+                // Check if next token is identifier followed by colon (a parameter)
+                if !matches!(self.peek().kind, TokenKind::Identifier(_)) {
+                    break;
+                }
+                // Peek ahead to see if it's followed by colon
+                if self.current + 1 >= self.tokens.len() 
+                    || !matches!(self.tokens[self.current + 1].kind, TokenKind::Colon) {
+                    break;
+                }
+                
+                // Peek further: if after "identifier : type" we see "=", it's a statement
+                // We need to parse ahead to check this
+                let mut peek_pos = self.current;
+                let mut is_param = true;
+                
+                // Skip identifier and colon
+                if peek_pos + 1 < self.tokens.len() 
+                    && matches!(self.tokens[peek_pos].kind, TokenKind::Identifier(_))
+                    && matches!(self.tokens[peek_pos + 1].kind, TokenKind::Colon) {
+                    peek_pos += 2;
+                    // Try to find what comes after the type
+                    // Types can be: primitive, identifier, ref type, etc.
+                    // We'll look for =, ,, returns, uses, {, end
+                    while peek_pos < self.tokens.len() {
+                        match &self.tokens[peek_pos].kind {
+                            TokenKind::Equal => {
+                                // After type we see =, this is a statement, not a parameter
+                                is_param = false;
+                                break;
+                            }
+                            TokenKind::Comma | TokenKind::Returns | TokenKind::Uses 
+                            | TokenKind::LeftBrace | TokenKind::End => {
+                                // These indicate end of parameter or parameter list
+                                break;
+                            }
+                            _ => {
+                                peek_pos += 1;
+                            }
+                        }
+                    }
+                }
+                
+                if !is_param {
+                    // This looks like a statement, not a parameter
+                    break;
+                }
+                
+                let name = self.expect_identifier()?;
+                // require explicit type annotation for all parameters
+                if !self.check(&TokenKind::Colon) {
+                    self.error("Parameter must have explicit type annotation");
+                    return Err(());
+                }
+                self.advance(); // :
+                let type_ = self.parse_type()?;
+                
+                // Double-check: if we see = now, this was actually a statement
+                if self.check(&TokenKind::Equal) {
+                    // We've consumed too much, but that's okay - the caller will handle it
+                    break;
+                }
+                
                 let span = self.previous().span;
                 params.push(Param {
                     name,
@@ -141,14 +270,14 @@ impl<'a> Parser<'a> {
                     span,
                 });
 
+                // check if there's another parameter (comma) or if we're done
                 if !self.check(&TokenKind::Comma) {
                     break;
                 }
-                self.advance(); // 
+                self.advance(); // ,
             }
+            Ok(params)
         }
-        self.expect(&TokenKind::RightParen)?;
-        Ok(params)
     }
 
     fn parse_generics(&mut self) -> Result<Vec<GenericParam>, ()> {
@@ -266,7 +395,7 @@ impl<'a> Parser<'a> {
     fn parse_trait_impl(&mut self) -> Result<TraitImpl, ()> {
         let start_span = self.advance().span; // implement
         let trait_name = self.expect_identifier()?;
-        self.expect(&TokenKind::Identifier("for".to_string()))?;
+        self.expect(&TokenKind::For)?;
         let type_name = self.expect_identifier()?;
         let generics = self.parse_generics()?;
         let mut methods = Vec::new();
@@ -723,9 +852,38 @@ impl<'a> Parser<'a> {
 
     fn parse_precedence(&mut self, precedence: Precedence) -> Result<Expr, ()> {
         let mut expr = self.parse_prefix()?;
+        
+        // Check for function calls without parentheses immediately after prefix
+        // This handles cases like "print "Hello"" where there's no operator
+        if (precedence == Precedence::Call || precedence == Precedence::Assignment)
+            && !self.is_at_end()
+            && !self.check(&TokenKind::Semicolon)
+            && !self.check(&TokenKind::End)
+            && !self.check(&TokenKind::Else)
+            && !self.check(&TokenKind::Comma)
+            && !self.check(&TokenKind::Eof)
+        {
+            let is_callable = matches!(
+                expr,
+                Expr::Variable(_) 
+                | Expr::FieldAccess(_) 
+                | Expr::MethodCall(_)
+                | Expr::Call(_)
+                | Expr::Index(_)
+            );
+            
+            if is_callable && self.can_parse_call_without_parens() {
+                return self.parse_call_without_parens(expr);
+            }
+        }
 
-        while precedence <= self.get_precedence() && !self.check(&TokenKind::Semicolon) {
-            expr = self.parse_infix(expr)?;
+        while precedence <= self.get_precedence() 
+            && !self.check(&TokenKind::Semicolon)
+            && !self.check(&TokenKind::End)
+            && !self.check(&TokenKind::Else)
+            && !self.check(&TokenKind::Comma)
+            && !self.check(&TokenKind::Eof) {
+            expr = self.parse_infix(expr, precedence)?;
         }
 
         Ok(expr)
@@ -860,13 +1018,22 @@ impl<'a> Parser<'a> {
                 if self.check(&TokenKind::Pipe) {
                     self.advance(); // |
                     while !self.check(&TokenKind::Pipe) && !self.is_at_end() {
+                        // Check for terminators before trying to parse
+                        if self.check(&TokenKind::End) || self.check(&TokenKind::RightBrace) {
+                            break;
+                        }
                         let name = self.expect_identifier()?;
+                        // Check if there's a type annotation (identifier : type)
+                        if self.check(&TokenKind::Colon) {
+                            self.advance(); // :
+                            let _type_ = self.parse_type()?; // parse but don't use for now
+                        }
                         params.push(name);
                         if !self.check(&TokenKind::Comma) && !self.check(&TokenKind::Pipe) {
                             break;
                         }
                         if self.check(&TokenKind::Comma) {
-                            self.advance(); // 
+                            self.advance(); // ,
                         }
                     }
                     if self.check(&TokenKind::Pipe) {
@@ -892,7 +1059,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_infix(&mut self, left: Expr) -> Result<Expr, ()> {
+    fn parse_infix(&mut self, left: Expr, current_precedence: Precedence) -> Result<Expr, ()> {
         match self.peek().kind {
             TokenKind::Plus
             | TokenKind::Minus
@@ -1000,8 +1167,16 @@ impl<'a> Parser<'a> {
                         field_name
                     }
                 };
-                // chk if its a method call
-                if self.check(&TokenKind::LeftParen) {
+                // exists? is always a field access, not a method call
+                if field == "exists?" {
+                    let span = Span::new(start.start(), self.previous().span.end());
+                    Ok(Expr::FieldAccess(FieldAccessExpr {
+                        object: Box::new(left),
+                        field,
+                        span,
+                    }))
+                } else if self.check(&TokenKind::LeftParen) {
+                    // method call with parentheses
                     self.advance(); // (
                     let mut args = Vec::new();
                     if !self.check(&TokenKind::RightParen) {
@@ -1010,10 +1185,31 @@ impl<'a> Parser<'a> {
                             if !self.check(&TokenKind::Comma) {
                                 break;
                             }
-                            self.advance(); // 
+                            self.advance(); // ,
                         }
                     }
                     self.expect(&TokenKind::RightParen)?;
+                    let span = Span::new(start.start(), self.previous().span.end());
+                    Ok(Expr::MethodCall(MethodCallExpr {
+                        receiver: Box::new(left),
+                        method: field,
+                        args,
+                        span,
+                    }))
+                } else if self.can_parse_call_without_parens() {
+                    // method call without parentheses
+                    let mut args = Vec::new();
+                    // parse first arg (required for calls w/o parens)
+                    let first_arg = self.parse_argument_expression()?;
+                    args.push(first_arg);
+                    
+                    // parse more args if comma separated
+                    while self.check(&TokenKind::Comma) {
+                        self.advance(); // ,
+                        let arg = self.parse_argument_expression()?;
+                        args.push(arg);
+                    }
+                    
                     let span = Span::new(start.start(), self.previous().span.end());
                     Ok(Expr::MethodCall(MethodCallExpr {
                         receiver: Box::new(left),
@@ -1042,8 +1238,95 @@ impl<'a> Parser<'a> {
                     span,
                 }))
             }
-            _ => Ok(left),
+            _ => {
+                // chk if we can parse fn call w/o parens
+                // works at Call precedence or Assignment precedence
+                // and for any callable expression (Variable, FieldAccess, MethodCall, etc.)
+                if (current_precedence == Precedence::Call || current_precedence == Precedence::Assignment) 
+                    && !self.is_at_end() 
+                {
+                    // Check if the expression is callable (not just Variable)
+                    let is_callable = matches!(
+                        left,
+                        Expr::Variable(_) 
+                        | Expr::FieldAccess(_) 
+                        | Expr::MethodCall(_)
+                        | Expr::Call(_)
+                        | Expr::Index(_)
+                    );
+                    
+                    if is_callable && self.can_parse_call_without_parens() {
+                        // Check if next token is a valid argument starter
+                        // If it is, parse as a call without parentheses
+                        return self.parse_call_without_parens(left);
+                    }
+                }
+                Ok(left)
+            }
         }
+    }
+
+    fn can_parse_call_without_parens(&self) -> bool {
+        if self.is_at_end() {
+            return false;
+        }
+        match self.peek().kind {
+            // can't be an operator
+            TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash
+            | TokenKind::Percent | TokenKind::EqualEqual | TokenKind::NotEqual
+            | TokenKind::Less | TokenKind::LessEqual | TokenKind::Greater
+            | TokenKind::GreaterEqual | TokenKind::And | TokenKind::Or
+            | TokenKind::Equal | TokenKind::LeftParen | TokenKind::LeftBracket
+            | TokenKind::Dot | TokenKind::Exists | TokenKind::Semicolon
+            | TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace
+            | TokenKind::Comma | TokenKind::Colon | TokenKind::End | TokenKind::Eof
+            | TokenKind::Returns | TokenKind::Uses => false,
+            // can be: identifier, literal, do (closure), or other expression starters
+            _ => true,
+        }
+    }
+
+    fn parse_call_without_parens(&mut self, callee: Expr) -> Result<Expr, ()> {
+        let start = callee.span();
+        let mut args = Vec::new();
+        
+        // parse first arg (required for calls w/o parens)
+        // Parse expression that stops at comma, end, semicolon, etc.
+        let first_arg = self.parse_argument_expression()?;
+        args.push(first_arg);
+        
+        // parse more args if comma separated
+        while self.check(&TokenKind::Comma) {
+            self.advance(); // consume the comma
+            // After advancing past the comma, we should be at the next expression
+            // parse_argument_expression will validate and parse it
+            let arg = self.parse_argument_expression()?;
+            args.push(arg);
+        }
+        
+        let span = Span::new(start.start(), self.previous().span.end());
+        Ok(Expr::Call(CallExpr {
+            callee: Box::new(callee),
+            args,
+            span,
+        }))
+    }
+    
+    // Parse an expression that can be used as a function argument
+    // Stops at comma, end, semicolon, or other statement terminators
+    fn parse_argument_expression(&mut self) -> Result<Expr, ()> {
+        // Check for invalid starters
+        if self.check(&TokenKind::Comma) || self.check(&TokenKind::End) 
+            || self.check(&TokenKind::Semicolon) || self.is_at_end() {
+            self.error("Expected expression");
+            return Err(());
+        }
+        
+        // Parse expression with assignment precedence (lowest), which will parse
+        // the full expression until we hit a comma or other terminator
+        let expr = self.parse_precedence(Precedence::Assignment)?;
+        
+        Ok(expr)
     }
 
     fn get_precedence(&self) -> Precedence {
@@ -1065,12 +1348,20 @@ impl<'a> Parser<'a> {
     fn parse_uses(&mut self) -> Result<Vec<String>, ()> {
         let mut uses = Vec::new();
         loop {
+            // check for terminators before trying to parse identifier
+            if self.check(&TokenKind::End)
+                || self.check(&TokenKind::LeftBrace)
+                || self.check(&TokenKind::Equal)
+                || self.is_at_end()
+            {
+                break;
+            }
             let name = self.expect_identifier()?;
             uses.push(name);
             if !self.check(&TokenKind::Comma) {
                 break;
             }
-            self.advance(); // 
+            self.advance(); // ,
         }
         Ok(uses)
     }

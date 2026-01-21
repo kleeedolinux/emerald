@@ -61,21 +61,21 @@ impl<'a> TypeChecker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let(s) => {
-                // first add var 2 symbol table w/ a plchldr type if we have annotation
-                // this allws the var 2 be used in its own itlzr
-                let initial_type = if let Some(annotated_type) = &s.type_annotation {
-                    resolve_ast_type(annotated_type)
-                } else {
-                    Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
-                };
+                // require explicit type annotation for all variables
+                if s.type_annotation.is_none() {
+                    self.error(s.span, "Variable must have explicit type annotation");
+                    return;
+                }
                 
-                // add var early if we hve a type annotation
-                if s.type_annotation.is_some() {
+                let annotated_type = resolve_ast_type(s.type_annotation.as_ref().unwrap());
+                
+                // var should already be defined by resolver, but ensure it exists
+                if self.symbol_table.resolve(&s.name).is_none() {
                     let symbol = crate::frontend::semantic::symbol_table::Symbol {
                         name: s.name.clone(),
                         kind: crate::frontend::semantic::symbol_table::SymbolKind::Variable {
                             mutable: s.mutable,
-                            type_: initial_type.clone(),
+                            type_: annotated_type.clone(),
                         },
                         span: s.span,
                         defined: true,
@@ -84,46 +84,24 @@ impl<'a> TypeChecker<'a> {
                 }
                 
                 // now chk the vl expression
-                let var_type = if let Some(value) = &s.value {
+                if let Some(value) = &s.value {
                     let value_type = self.check_expr(value);
-                    if let Some(annotated_type) = &s.type_annotation {
-                        let expected = resolve_ast_type(annotated_type);
-                        if !self.types_compatible(&value_type, &expected) {
-                            self.error(
-                                s.span,
-                                &format!(
-                                    "Type mismatch: expected {:?}, got {:?}",
-                                    expected, value_type
-                                ),
-                            );
-                        }
-                        expected
-                    } else {
-                        value_type
+                    if !self.types_compatible(&annotated_type, &value_type) {
+                        self.error(
+                            s.span,
+                            &format!(
+                                "Type mismatch: expected {:?}, got {:?}",
+                                annotated_type, value_type
+                            ),
+                        );
                     }
-                } else {
-                    initial_type
-                };
+                }
                 
-                // update or add var w/ final type
-                // if var was alrdy defined by resolver update it; otherwise add it
+                // update symbol type if needed
                 if let Some(existing_symbol) = self.symbol_table.resolve_mut(&s.name) {
-                    // updt the type of the existing symbol
                     if let crate::frontend::semantic::symbol_table::SymbolKind::Variable { mutable: _, type_ } = &mut existing_symbol.kind {
-                        *type_ = var_type;
+                        *type_ = annotated_type;
                     }
-                } else {
-                    // var wsnt defined by resolver add it now
-                    let symbol = crate::frontend::semantic::symbol_table::Symbol {
-                        name: s.name.clone(),
-                        kind: crate::frontend::semantic::symbol_table::SymbolKind::Variable {
-                            mutable: s.mutable,
-                            type_: var_type,
-                        },
-                        span: s.span,
-                        defined: true,
-                    };
-                    let _ = self.symbol_table.define(s.name.clone(), symbol);
                 }
             }
             Stmt::Return(s) => {
@@ -135,8 +113,23 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr(&s.expr);
             }
             Stmt::If(s) => {
+                // Check if condition is an exists? expression (either Exists or FieldAccess with exists?)
+                // These always return bool, so we allow them regardless of type check result
+                let is_exists_check = match &s.condition {
+                    Expr::Exists(_) => true,
+                    Expr::FieldAccess(f) => {
+                        // Check if field is exists? (handle both "exists?" and potential variations)
+                        f.field == "exists?" || f.field.starts_with("exists")
+                    },
+                    _ => false,
+                };
+                
+                // Always check the expression first to get its type
                 let cond_type = self.check_expr(&s.condition);
-                if !self.is_bool_type(&cond_type) {
+                
+                // If it's an exists? check, it's always valid as a condition
+                // Otherwise, check if the type is bool
+                if !is_exists_check && !self.is_bool_type(&cond_type) {
                     self.error(s.condition.span(), "Condition must be bool");
                 }
                 for stmt in &s.then_branch {
@@ -149,8 +142,23 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Stmt::While(s) => {
+                // Check if condition is an exists? expression (either Exists or FieldAccess with exists?)
+                // These always return bool, so we allow them regardless of type check result
+                let is_exists_check = match &s.condition {
+                    Expr::Exists(_) => true,
+                    Expr::FieldAccess(f) => {
+                        // Check if field is exists? (handle both "exists?" and potential variations)
+                        f.field == "exists?" || f.field.starts_with("exists")
+                    },
+                    _ => false,
+                };
+                
+                // Always check the expression first to get its type
                 let cond_type = self.check_expr(&s.condition);
-                if !self.is_bool_type(&cond_type) {
+                
+                // If it's an exists? check, it's always valid as a condition
+                // Otherwise, check if the type is bool
+                if !is_exists_check && !self.is_bool_type(&cond_type) {
                     self.error(s.condition.span(), "Condition must be bool");
                 }
                 for stmt in &s.body {
@@ -238,7 +246,29 @@ impl<'a> TypeChecker<'a> {
                 let object_type = self.check_expr(&f.object);
                 match object_type {
                     Type::Struct(s) => {
-                        if let Some(field) = s.fields.iter().find(|field| field.name == f.field) {
+                        // if struct has no fields (generic type), look it up in symbol table
+                        let fields = if s.fields.is_empty() {
+                            if let Some(symbol) = self.symbol_table.resolve(&s.name) {
+                                if let crate::frontend::semantic::symbol_table::SymbolKind::Struct { fields } = &symbol.kind {
+                                    fields.iter().map(|(name, type_)| {
+                                        crate::core::types::composite::Field {
+                                            name: name.clone(),
+                                            type_: type_.clone(),
+                                            offset: None,
+                                        }
+                                    }).collect()
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                Vec::new()
+                            }
+                        } else {
+                            s.fields.clone()
+                        };
+                        
+                        if let Some(field) = fields.iter().find(|field| field.name == f.field) {
+                            // Return the field type - if it's generic, assignments will be allowed
                             field.type_.clone()
                         } else {
                             self.error(f.span, &format!("Field '{}' not found", f.field));
@@ -305,9 +335,20 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::If(i) => {
-                let cond_type = self.check_expr(&i.condition);
-                if !self.is_bool_type(&cond_type) {
-                    self.error(i.condition.span(), "If condition must be bool");
+                // Check if condition is an exists? expression (either Exists or FieldAccess with exists?)
+                let is_exists_check = match &*i.condition {
+                    Expr::Exists(_) => true,
+                    Expr::FieldAccess(f) => f.field == "exists?",
+                    _ => false,
+                };
+                
+                if !is_exists_check {
+                    let cond_type = self.check_expr(&i.condition);
+                    if !self.is_bool_type(&cond_type) {
+                        self.error(i.condition.span(), "If condition must be bool");
+                    }
+                } else {
+                    let _ = self.check_expr(&i.condition);
                 }
                 let then_type = self.check_expr(&i.then_branch);
                 let else_type = if let Some(e) = &i.else_branch {
@@ -321,13 +362,10 @@ impl<'a> TypeChecker<'a> {
                 then_type
             }
             Expr::Assignment(a) => {
-                // 4 assignments like `y = x + 5` the target mght be a var being dfnd
-                // chk if target is a var that needs 2 be added 2 smbl table frist
                 let target_type = if let Expr::Variable(v) = &*a.target {
-                    // var assignment chk if it exsts if not its bng defined
                     if self.symbol_table.resolve(&v.name).is_none() {
-                        // var doesnt exist yet this is a definition not an assignment
-                        // add it w/ inferred type from value
+                        // Variable doesn't exist - infer type from value
+                        // This allows assignments like "a = 10 + 20" without explicit type annotation
                         let value_type = self.check_expr(&a.value);
                         let symbol = crate::frontend::semantic::symbol_table::Symbol {
                             name: v.name.clone(),
@@ -341,15 +379,31 @@ impl<'a> TypeChecker<'a> {
                         let _ = self.symbol_table.define(v.name.clone(), symbol);
                         return value_type;
                     } else {
+                        // Variable exists - check compatibility
                         self.check_expr(&a.target)
                     }
                 } else {
+                    // Not a variable assignment - check the target type
+                    // For field access on generic structs, we might get Generic type
                     self.check_expr(&a.target)
                 };
                 let value_type = self.check_expr(&a.value);
-                // chk type compatibility
-                if !self.types_compatible(&target_type, &value_type) {
-                    self.error(a.span, &format!("Type mismatch in assignment"));
+                
+                // If target type is generic, allow assignment (generic will be inferred/substituted)
+                // This handles cases like b.item = 42 where item has type Generic(T)
+                let is_generic = matches!(target_type, Type::Generic(_));
+                
+                // Also check if target is a struct with empty fields - this might be a generic parameter
+                // that was incorrectly resolved as a struct (e.g., T -> StructType { name: "T", fields: [] })
+                let is_potentially_generic = if let Type::Struct(s) = &target_type {
+                    s.fields.is_empty() && !self.symbol_table.resolve(&s.name).is_some()
+                } else {
+                    false
+                };
+                
+                // Also check types_compatible which already handles generic types
+                if !is_generic && !is_potentially_generic && !self.types_compatible(&target_type, &value_type) {
+                    self.error(a.span, &format!("Type mismatch in assignment: expected {:?}, got {:?}", target_type, value_type));
                 }
                 value_type
             }
@@ -462,6 +516,9 @@ impl<'a> TypeChecker<'a> {
         }
         // str literals can be assigned 2 str type
         if matches!(a, Type::String) && matches!(b, Type::String) {
+            return true;
+        }
+        if matches!(a, Type::Generic(_)) || matches!(b, Type::Generic(_)) {
             return true;
         }
         false
