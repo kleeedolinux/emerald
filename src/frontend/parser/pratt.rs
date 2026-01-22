@@ -584,14 +584,8 @@ impl<'a> Parser<'a> {
             path.push(name);
             if self.check(&TokenKind::Dot) {
                 self.advance(); // .
-            } else if self.check(&TokenKind::Colon) {
-                let next = self.peek();
-                if next.kind == TokenKind::Colon {
-                    self.advance(); // :
-                    self.advance(); // :
-                } else {
-                    break;
-                }
+            } else if self.check(&TokenKind::ColonColon) {
+                self.advance(); // ::
             } else {
                 break;
             }
@@ -1541,6 +1535,19 @@ impl<'a> Parser<'a> {
                 let span = Span::new(start.start(), self.previous().span.end());
                 Ok(Expr::Exists(ExistsExpr {
                     expr: Box::new(left),
+                    span,
+                }))
+            }
+            TokenKind::LeftBracket => {
+                // array indexing: arr[0]
+                let start = left.span();
+                self.advance(); // [
+                let index = self.parse_expression()?;
+                self.expect(&TokenKind::RightBracket)?;
+                let span = Span::new(start.start(), self.previous().span.end());
+                Ok(Expr::Index(IndexExpr {
+                    array: Box::new(left),
+                    index: Box::new(index),
                     span,
                 }))
             }
