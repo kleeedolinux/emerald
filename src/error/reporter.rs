@@ -1,6 +1,7 @@
 use crate::error::Diagnostic;
 use codespan::{FileId, Files};
 
+#[derive(Debug)]
 pub struct Reporter {
     files: Files<String>,
     diagnostics: Vec<Diagnostic>,
