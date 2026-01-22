@@ -1,9 +1,10 @@
 use crate::backend::factory::{BackendFactory, BackendType, BackendError};
 use crate::backend::ports::{CodeGen, Emitter, Optimizer};
-use crate::backend::ports::codegen::{CodeGenError, Module, OptimizationLevel};
+use crate::backend::ports::codegen::{CodeGenError, Module, OptimizationLevel, BackendInputType};
 use crate::backend::ports::optimizer::OptimizationError;
 use crate::backend::ports::emitter::EmitError;
 use crate::core::mir::MirFunction;
+use crate::core::hir::Hir;
 use std::path::Path;
 
 /// null backend factory
@@ -43,7 +44,7 @@ impl NullCodeGen {
 }
 
 impl CodeGen for NullCodeGen {
-    fn generate(&mut self, _mir: &[MirFunction]) -> Result<Module, CodeGenError> {
+    fn generate_from_mir(&mut self, _mir: &[MirFunction]) -> Result<Module, CodeGenError> {
         // no op: just ret a plchldr module
         Ok(Module {
             name: "null_module".to_string(),
@@ -56,6 +57,10 @@ impl CodeGen for NullCodeGen {
     
     fn set_target_triple(&mut self, triple: String) {
         self.target_triple = triple;
+    }
+    
+    fn preferred_input(&self) -> BackendInputType {
+        BackendInputType::Mir
     }
 }
 

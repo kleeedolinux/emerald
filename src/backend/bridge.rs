@@ -1,8 +1,9 @@
 use crate::backend::factory::{BackendFactory, BackendError, BackendType};
 use crate::backend::ports::{CodeGen, Emitter, Optimizer};
-use crate::backend::ports::codegen::{Module, OptimizationLevel};
+use crate::backend::ports::codegen::{Module, OptimizationLevel, BackendInput, BackendInputType};
 use crate::backend::ports::emitter::EmitType;
 use crate::core::mir::MirFunction;
+use crate::core::hir::Hir;
 use std::path::Path;
 use thiserror::Error;
 
@@ -36,10 +37,27 @@ impl BackendBridge {
         self.codegen.set_target_triple(triple);
     }
     
-    /// cmpl mir functions 2 a mdl
-    pub fn compile(&mut self, mir: &[MirFunction]) -> Result<Module, CompileError> {
-        self.codegen.generate(mir)
+    /// cmpl from HIR or MIR based on backend preference
+    pub fn compile(&mut self, input: BackendInput) -> Result<Module, CompileError> {
+        self.codegen.generate(input)
             .map_err(|e| CompileError::CodeGenFailed(e.to_string()))
+    }
+    
+    /// cmpl from HIR
+    pub fn compile_from_hir(&mut self, hir: &[Hir]) -> Result<Module, CompileError> {
+        self.codegen.generate_from_hir(hir)
+            .map_err(|e| CompileError::CodeGenFailed(e.to_string()))
+    }
+    
+    /// cmpl from MIR
+    pub fn compile_from_mir(&mut self, mir: &[MirFunction]) -> Result<Module, CompileError> {
+        self.codegen.generate_from_mir(mir)
+            .map_err(|e| CompileError::CodeGenFailed(e.to_string()))
+    }
+    
+    /// get preferred input type
+    pub fn preferred_input_type(&self) -> BackendInputType {
+        self.codegen.preferred_input()
     }
     
     /// optmz a module
@@ -62,12 +80,12 @@ impl BackendBridge {
     /// full compilation pipeline: cmpl > optimize > emit
     pub fn compile_and_emit(
         &mut self,
-        mir: &[MirFunction],
+        input: BackendInput,
         emit_type: EmitType,
         output: &Path,
     ) -> Result<(), CompileError> {
         // gen code
-        let mut module = self.compile(mir)?;
+        let mut module = self.compile(input)?;
         
         // optimize
         self.optimize(&mut module)?;
@@ -76,6 +94,26 @@ impl BackendBridge {
         self.emit(&module, emit_type, output)?;
         
         Ok(())
+    }
+    
+    /// cmpl and emit from HIR
+    pub fn compile_and_emit_from_hir(
+        &mut self,
+        hir: &[Hir],
+        emit_type: EmitType,
+        output: &Path,
+    ) -> Result<(), CompileError> {
+        self.compile_and_emit(BackendInput::Hir(hir.to_vec()), emit_type, output)
+    }
+    
+    /// cmpl and emit from MIR
+    pub fn compile_and_emit_from_mir(
+        &mut self,
+        mir: &[MirFunction],
+        emit_type: EmitType,
+        output: &Path,
+    ) -> Result<(), CompileError> {
+        self.compile_and_emit(BackendInput::Mir(mir.to_vec()), emit_type, output)
     }
     
     /// get the bcknd type

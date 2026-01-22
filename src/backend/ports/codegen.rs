@@ -1,4 +1,5 @@
 use crate::core::mir::MirFunction;
+use crate::core::hir::Hir;
 use thiserror::Error;
 
 /// represents a compiled module
@@ -9,16 +10,52 @@ pub struct Module {
     // backend spcfc data will be added here
 }
 
-/// trait 4 code generation from mir
+/// backend input type - some backends use HIR others use MIR
+#[derive(Debug, Clone)]
+pub enum BackendInput {
+    Hir(Vec<Hir>),
+    Mir(Vec<MirFunction>),
+}
+
+/// trait 4 code generation - supports both HIR and MIR
 pub trait CodeGen {
-    /// gen coe from mir functions
-    fn generate(&mut self, mir: &[MirFunction]) -> Result<Module, CodeGenError>;
+    /// gen code from HIR (for HIR-based backends)
+    fn generate_from_hir(&mut self, hir: &[Hir]) -> Result<Module, CodeGenError> {
+        Err(CodeGenError::UnsupportedFeature(
+            "This backend does not support HIR input".to_string()
+        ))
+    }
+    
+    /// gen code from MIR (for MIR-based backends)
+    fn generate_from_mir(&mut self, mir: &[MirFunction]) -> Result<Module, CodeGenError> {
+        Err(CodeGenError::UnsupportedFeature(
+            "This backend does not support MIR input".to_string()
+        ))
+    }
+    
+    /// gen code - auto-selects HIR or MIR based on backend preference
+    fn generate(&mut self, input: BackendInput) -> Result<Module, CodeGenError> {
+        match input {
+            BackendInput::Hir(hir) => self.generate_from_hir(&hir),
+            BackendInput::Mir(mir) => self.generate_from_mir(&mir),
+        }
+    }
     
     /// set optimization lvl
     fn set_optimization_level(&mut self, level: OptimizationLevel);
     
     /// set target trpl
     fn set_target_triple(&mut self, triple: String);
+    
+    /// get preferred input type (HIR or MIR)
+    fn preferred_input(&self) -> BackendInputType;
+}
+
+/// backend input type preference
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendInputType {
+    Hir,
+    Mir,
 }
 
 #[derive(Debug, Error)]

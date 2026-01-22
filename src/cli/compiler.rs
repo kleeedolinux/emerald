@@ -18,13 +18,37 @@ use codespan_reporting::term::termcolor::ColorChoice;
 use std::fs;
 use std::time::Instant;
 
-/// cmpltn result
+/// cmpltn result - provides access to both HIR and MIR
+/// some backends use HIR (higher level) others use MIR (lower level)
 #[derive(Debug)]
 pub struct CompileResult {
     pub mir_functions: Vec<MirFunction>,
     pub hir: Option<Hir>,
     pub reporter: Reporter,
     pub success: bool,
+    pub ast: Option<crate::core::ast::Ast>,
+}
+
+impl CompileResult {
+    /// get HIR if available (for HIR-based backends)
+    pub fn hir(&self) -> Option<&Hir> {
+        self.hir.as_ref()
+    }
+
+    /// get MIR functions (for MIR-based backends)
+    pub fn mir(&self) -> &[MirFunction] {
+        &self.mir_functions
+    }
+
+    /// check if HIR is available
+    pub fn has_hir(&self) -> bool {
+        self.hir.is_some()
+    }
+
+    /// check if MIR is available
+    pub fn has_mir(&self) -> bool {
+        !self.mir_functions.is_empty()
+    }
 }
 
 /// compiler orchestrator
@@ -107,7 +131,7 @@ impl Compiler {
         // backend code generation
         if self.should_run_backend() {
             self.progress.set_phase(CompilePhase::CodeGeneration);
-            if let Err(e) = self.run_backend(&mir_functions) {
+            if let Err(e) = self.run_backend(Some(&hir), &mir_functions) {
                 // bakcend errrs dont fail the cmltn just warn
                 if self.config.verbose {
                     Output::warning(&format!("Backend codegen failed: {}", e));
@@ -125,6 +149,7 @@ impl Compiler {
             hir: Some(hir),
             reporter,
             success,
+            ast: Some(ast),
         })
     }
 
@@ -135,7 +160,7 @@ impl Compiler {
     }
 
     /// run bcknd code generation
-    fn run_backend(&self, mir_functions: &[MirFunction]) -> Result<(), String> {
+    fn run_backend(&self, hir: Option<&Hir>, mir_functions: &[MirFunction]) -> Result<(), String> {
         // get backend type from config
         let mut backend_type = self.config.backend;
 
@@ -196,8 +221,29 @@ impl Compiler {
         let output = self.config.output.as_ref()
             .ok_or_else(|| "No output file specified".to_string())?;
 
-        // compile and emit
-        bridge.compile_and_emit(mir_functions, emit_type, output)
+        // compile and emit - use backend's preferred input type
+        let preferred = bridge.preferred_input_type();
+        let input = match preferred {
+            crate::backend::ports::codegen::BackendInputType::Hir => {
+                // use HIR if available
+                if let Some(hir) = hir {
+                    crate::backend::ports::codegen::BackendInput::Hir(vec![hir.clone()])
+                } else {
+                    // backend requires HIR but we don't have it - this is an error
+                    return Err(format!(
+                        "Backend '{}' requires HIR input but HIR is not available. \
+                         This may indicate a compilation error in the frontend pipeline.",
+                        backend_type.as_str()
+                    ));
+                }
+            }
+            crate::backend::ports::codegen::BackendInputType::Mir => {
+                // use MIR (always available after MIR lowering)
+                crate::backend::ports::codegen::BackendInput::Mir(mir_functions.to_vec())
+            }
+        };
+        
+        bridge.compile_and_emit(input, emit_type, output)
             .map_err(|e| format!("Backend compilation failed: {}", e))?;
 
         Ok(())
