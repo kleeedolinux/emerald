@@ -110,6 +110,7 @@ pub struct ForeignFunction {
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub abi: Option<String>,
+    pub variadic: bool,
     pub span: Span,
 }
 

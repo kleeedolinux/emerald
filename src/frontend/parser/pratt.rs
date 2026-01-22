@@ -74,7 +74,7 @@ impl<'a> Parser<'a> {
         let start_span = self.advance().span; // def
         let name = self.expect_identifier_or_keyword()?;
         let generics = self.parse_generics()?;
-        let params = self.parse_params()?;
+        let (params, _variadic) = self.parse_params()?;
         let return_type = if self.check(&TokenKind::Returns) {
             self.advance();
             Some(self.parse_type()?)
@@ -166,13 +166,26 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_params(&mut self) -> Result<Vec<Param>, ()> {
+    fn parse_params(&mut self) -> Result<(Vec<Param>, bool), ()> {
         if self.check(&TokenKind::LeftParen) {
             // parse with parentheses
             self.advance(); // (
             let mut params = Vec::new();
+            let mut variadic = false;
             if !self.check(&TokenKind::RightParen) {
                 loop {
+                    // Check for ellipsis (variadic parameter)
+                    if self.check(&TokenKind::Ellipsis) {
+                        self.advance(); // consume ...
+                        // Ellipsis should be the last thing before closing paren
+                        if !self.check(&TokenKind::RightParen) {
+                            self.error("Ellipsis must be the last parameter");
+                            return Err(());
+                        }
+                        variadic = true;
+                        break; // Exit loop, ellipsis handled
+                    }
+                    
                     let name = self.expect_identifier_or_keyword()?;
                     // require explicit type annotation for all parameters
                     if !self.check(&TokenKind::Colon) {
@@ -195,7 +208,7 @@ impl<'a> Parser<'a> {
                 }
             }
             self.expect(&TokenKind::RightParen)?;
-            Ok(params)
+            Ok((params, variadic))
         } else {
             // try to parse params without parentheses
             // First check if we're definitely not in params (see returns, uses, {, end, or statement keywords)
@@ -211,7 +224,7 @@ impl<'a> Parser<'a> {
                 || self.check(&TokenKind::Comptime)
                 || self.is_at_end()
             {
-                return Ok(Vec::new());
+                return Ok((Vec::new(), false));
             }
             
             // Check if next token is identifier followed by colon
@@ -222,15 +235,15 @@ impl<'a> Parser<'a> {
             if !looks_like_param {
                 // If we see = or other statement starters, it's not a param
                 if self.check(&TokenKind::Equal) {
-                    return Ok(Vec::new());
+                    return Ok((Vec::new(), false));
                 }
                 // If we see an identifier but not followed by colon, it's not a param
                 if matches!(self.peek().kind, TokenKind::Identifier(_)) {
-                    return Ok(Vec::new());
+                    return Ok((Vec::new(), false));
                 }
                 // If we see a literal, expression starter, or other non-parameter token, it's not a param
                 // Just return empty params instead of erroring
-                return Ok(Vec::new());
+                return Ok((Vec::new(), false));
             }
             
             // parse parameters until we hit returns, uses, {, =, or end
@@ -322,7 +335,7 @@ impl<'a> Parser<'a> {
                 }
                 self.advance(); // ,
             }
-            Ok(params)
+            Ok((params, false))
         }
     }
 
@@ -521,7 +534,7 @@ impl<'a> Parser<'a> {
     fn parse_foreign_function(&mut self) -> Result<ForeignFunction, ()> {
         self.advance(); // def
         let name = self.expect_identifier_or_keyword()?;
-        let params = self.parse_params()?;
+        let (params, variadic) = self.parse_params()?;
         let return_type = if self.check(&TokenKind::Returns) {
             self.advance();
             Some(self.parse_type()?)
@@ -546,6 +559,7 @@ impl<'a> Parser<'a> {
             params,
             return_type,
             abi,
+            variadic,
             span,
         })
     }

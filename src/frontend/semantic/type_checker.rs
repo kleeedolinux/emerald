@@ -101,8 +101,23 @@ impl<'a> TypeChecker<'a> {
                             ),
                         );
                     } else if annotated_type != value_type {
-                        // strict check - no numeric promotion in assignments
-                        if !self.types_compatible_strict(&annotated_type, &value_type) {
+                        // Check for array size compatibility
+                        let compatible = if let (Type::Array(annotated_arr), Type::Array(value_arr)) = (&annotated_type, &value_type) {
+                            // Arrays are compatible if element types match and:
+                            // 1. Empty array literal (size 0) can match any array size
+                            // 2. Array literal size <= declared array size
+                            if annotated_arr.element == value_arr.element {
+                                // Allow empty arrays or literals with fewer elements
+                                value_arr.size == 0 || value_arr.size <= annotated_arr.size
+                            } else {
+                                false
+                            }
+                        } else {
+                            // Not both arrays, use standard compatibility check
+                            self.types_compatible_strict(&annotated_type, &value_type)
+                        };
+                        
+                        if !compatible {
                             self.error(
                                 s.span,
                                 &format!(

@@ -79,6 +79,7 @@ pub enum TokenKind {
     Semicolon,      // ;
     Question,       // ?
     Exists,         // exisst?
+    Ellipsis,       // ...
 
     // dlmtrs
     LeftParen,      // (
