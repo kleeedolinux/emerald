@@ -5,7 +5,7 @@ use crate::frontend::semantic::symbol_table::SymbolTable;
 use codespan::FileId;
 
 pub struct Monomorphizer<'a> {
-    symbol_table: &'a SymbolTable,
+    _symbol_table: &'a SymbolTable,
     reporter: &'a mut Reporter,
     file_id: FileId,
 }
@@ -13,7 +13,7 @@ pub struct Monomorphizer<'a> {
 impl<'a> Monomorphizer<'a> {
     pub fn new(symbol_table: &'a SymbolTable, reporter: &'a mut Reporter, file_id: FileId) -> Self {
         Self {
-            symbol_table,
+            _symbol_table: symbol_table,
             reporter,
             file_id,
         }

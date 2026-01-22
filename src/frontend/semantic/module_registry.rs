@@ -10,11 +10,11 @@ pub struct ModuleRegistry {
     namespace_map: HashMap<String, String>, // symbol path -> module path
 }
 
-struct ModuleInfo {
+pub struct ModuleInfo {
     ast: Ast,
     file_id: FileId,
     symbol_table: SymbolTable,
-    namespace: Vec<String>, // module path components
+    _namespace: Vec<String>, // module path components
 }
 
 impl ModuleRegistry {
@@ -47,7 +47,7 @@ impl ModuleRegistry {
             ast,
             file_id,
             symbol_table,
-            namespace: namespace.clone(),
+            _namespace: namespace.clone(),
         };
 
         // build namespace map 4 quick lookup
