@@ -3,8 +3,6 @@
   <img src="https://img.shields.io/badge/Codeberg-primary%20repo-2185d0?logo=codeberg&logoColor=white"
        style="height:28px;">
 </a>
-[![Lines of Code](https://img.shields.io/endpoint?url=https%3A%2F%2Ftokei.kojix2.net%2Fbadge%2Fgithub%2Femerald-language%2Femerald%2Flines)](https://tokei.kojix2.net/github/emerald-language/emerald)
-[![Top Language](https://img.shields.io/endpoint?url=https%3A%2F%2Ftokei.kojix2.net%2Fbadge%2Fgithub%2Femerald-language%2Femerald%2Flanguage)](https://tokei.kojix2.net/github/emerald-language/emerald)
 
 This repository exists as a mirror.
 
