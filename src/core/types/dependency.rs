@@ -217,6 +217,10 @@ impl DependencyGraph {
                 }
                 Self::extract_dependencies_recursive(&f.return_type, deps);
             }
+            Type::TraitObject(_) => {
+                // trait objects dont have direct struct dependencies
+                // they r dynamically dispatched
+            }
             _ => {}
         }
     }

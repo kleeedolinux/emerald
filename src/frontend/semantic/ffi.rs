@@ -60,6 +60,7 @@ impl<'a> FfiChecker<'a> {
             Type::Generic(_) => false,
             Type::Function(_) => false,
             Type::String => false,
+            Type::TraitObject(_) => false, // trait objects not supported in FFI
         }
     }
 

@@ -460,6 +460,85 @@ impl MirLowerer {
             HirExpr::Index(i) => {
                 let array = self.lower_expr(func, &i.array, bb_id);
                 let index = self.lower_expr(func, &i.index, bb_id);
+                
+                // get array type 2 chk bounds
+                let array_type = i.array.type_();
+                if let crate::core::types::ty::Type::Array(arr) = array_type {
+                    // runtime bounds chk 4 non-const indices
+                    // if const index bounds alrdy chkd at compile time
+                    let is_constant = matches!(*i.index, HirExpr::Literal(_) | HirExpr::Comptime(_));
+                    
+                    if !is_constant && arr.size > 0 {
+                        // gen bounds chk: if index >= array_size branch 2 err block
+                        // crt err and continue blocks first
+                        let error_bb_id = func.new_block();
+                        let continue_bb_id = func.new_block();
+                        let merge_bb_id = func.new_block();
+                        
+                        // cmp index w/ array size
+                        let size_operand = Operand::Constant(Constant::Int(arr.size as i64));
+                        let cmp_dest = func.new_local(crate::core::types::ty::Type::Primitive(
+                            crate::core::types::primitive::PrimitiveType::Bool
+                        ), None);
+                        
+                        // chk if index >= array_size
+                        let bb = func.get_block_mut(bb_id).unwrap();
+                        bb.add_instruction(Instruction::Ge {
+                            dest: cmp_dest,
+                            left: index.clone(),
+                            right: size_operand,
+                        });
+                        
+                        // branch: if index >= size go 2 err block else continue
+                        bb.add_instruction(Instruction::Br {
+                            condition: Operand::Local(cmp_dest),
+                            then_bb: error_bb_id,
+                            else_bb: continue_bb_id,
+                        });
+                        
+                        // err block: gen null val 4 out of bounds
+                        let error_val = func.new_local(i.type_.clone(), None);
+                        let error_bb = func.get_block_mut(error_bb_id).unwrap();
+                        // load null as err indicator (cld be improved w/ actual panic fn)
+                        error_bb.add_instruction(Instruction::Load {
+                            dest: error_val,
+                            source: Operand::Constant(Constant::Null),
+                            type_: i.type_.clone(),
+                        });
+                        error_bb.add_instruction(Instruction::Jump {
+                            target: merge_bb_id,
+                        });
+                        
+                        // continue block: normal array access
+                        let valid_dest = func.new_local(i.type_.clone(), None);
+                        let continue_bb = func.get_block_mut(continue_bb_id).unwrap();
+                        continue_bb.add_instruction(Instruction::Gep {
+                            dest: valid_dest,
+                            base: array,
+                            index,
+                            type_: i.type_.clone(),
+                        });
+                        continue_bb.add_instruction(Instruction::Jump {
+                            target: merge_bb_id,
+                        });
+                        
+                        // merge block: use phi node 2 merge results frm both paths
+                        let phi_dest = func.new_local(i.type_.clone(), None);
+                        let merge_bb = func.get_block_mut(merge_bb_id).unwrap();
+                        merge_bb.add_instruction(Instruction::Phi {
+                            dest: phi_dest,
+                            type_: i.type_.clone(),
+                            incoming: vec![
+                                (Operand::Local(error_val), error_bb_id),
+                                (Operand::Local(valid_dest), continue_bb_id),
+                            ],
+                        });
+                        
+                        return Operand::Local(phi_dest);
+                    }
+                }
+                
+                // normal array access (const index or no bounds chk needed)
                 let dest = func.new_local(i.type_.clone(), None);
                 let bb = func.get_block_mut(bb_id).unwrap();
                 bb.add_instruction(Instruction::Gep {

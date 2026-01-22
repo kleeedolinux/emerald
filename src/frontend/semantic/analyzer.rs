@@ -1,4 +1,4 @@
-use crate::core::ast::{Ast, Item};
+use crate::core::ast::{Ast, Item, Stmt};
 use crate::core::types::module::ModuleDependencyGraph;
 use crate::error::Reporter;
 use crate::frontend::semantic::borrow_checker::BorrowChecker;
@@ -61,7 +61,243 @@ impl<'a> SemanticAnalyzer<'a> {
         let mut borrow_checker = BorrowChecker::new(self.reporter, self.file_id);
         borrow_checker.check(ast);
 
+        // lifetime checking
+        let mut lifetime_checker = crate::frontend::semantic::lifetime_checker::LifetimeChecker::new(self.reporter, self.file_id);
+        lifetime_checker.check(ast);
+
+        // specialization: gen specialized copies of generic fns/structs
+        // track instantiations during type checking and gen specialized items
+        let mut specializer = crate::frontend::semantic::specializer::Specializer::new();
+        
+        // track instantiations frm type checker (generic structs used w/ concrete types)
+        // this happens when we see List[int] or similar in the code
+        // scan the ast 2 find generic instantiations
+        Self::track_generic_instantiations(ast, &mut specializer, &symbol_table);
+        
+        // gen specialized items
+        let specialized_items = specializer.generate_specializations(ast);
+        
+        // add specialized items 2 symbol table
+        if !specialized_items.is_empty() {
+            let specialized_ast = Ast {
+                items: specialized_items,
+                span: ast.span,
+            };
+            let mut collector = SymbolCollector::new(self.reporter, self.file_id);
+            let specialized_symbols = collector.collect_symbols(&specialized_ast);
+            
+            // merge specialized symbols into main symbol table
+            for (name, symbol) in specialized_symbols.all_symbols() {
+                if let Err(_) = symbol_table.define(name.clone(), symbol.clone()) {
+                    // symbol already exists - specialized version takes precedence
+                    if let Some(existing) = symbol_table.resolve_mut(&name) {
+                        *existing = symbol;
+                    }
+                }
+            }
+        }
+
         symbol_table
+    }
+
+    /// track generic instantiations frm ast
+    fn track_generic_instantiations(
+        ast: &Ast,
+        specializer: &mut crate::frontend::semantic::specializer::Specializer,
+        symbol_table: &SymbolTable,
+    ) {
+        use crate::core::types::generic::GenericContext;
+        use crate::core::types::resolver::resolve_ast_type;
+        
+        for item in &ast.items {
+            match item {
+                Item::Function(f) => {
+                    // chk params and ret type 4 generic instantiations
+                    for param in &f.params {
+                        Self::track_type_instantiation(&param.type_, specializer, symbol_table);
+                    }
+                    if let Some(ret_type) = &f.return_type {
+                        Self::track_type_instantiation(ret_type, specializer, symbol_table);
+                    }
+                    if let Some(body) = &f.body {
+                        Self::track_instantiations_in_stmts(body, specializer, symbol_table);
+                    }
+                }
+                Item::Struct(s) => {
+                    for field in &s.fields {
+                        Self::track_type_instantiation(&field.type_, specializer, symbol_table);
+                    }
+                }
+                Item::Global(g) => {
+                    Self::track_type_instantiation(&g.type_, specializer, symbol_table);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn track_instantiations_in_stmts(
+        stmts: &[crate::core::ast::stmt::Stmt],
+        specializer: &mut crate::frontend::semantic::specializer::Specializer,
+        symbol_table: &SymbolTable,
+    ) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Let(s) => {
+                    if let Some(type_ann) = &s.type_annotation {
+                        Self::track_type_instantiation(type_ann, specializer, symbol_table);
+                    }
+                    if let Some(value) = &s.value {
+                        Self::track_instantiations_in_expr(value, specializer, symbol_table);
+                    }
+                }
+                Stmt::Return(s) => {
+                    if let Some(value) = &s.value {
+                        Self::track_instantiations_in_expr(value, specializer, symbol_table);
+                    }
+                }
+                Stmt::Expr(s) => {
+                    Self::track_instantiations_in_expr(&s.expr, specializer, symbol_table);
+                }
+                Stmt::If(s) => {
+                    Self::track_instantiations_in_expr(&s.condition, specializer, symbol_table);
+                    Self::track_instantiations_in_stmts(&s.then_branch, specializer, symbol_table);
+                    if let Some(else_branch) = &s.else_branch {
+                        Self::track_instantiations_in_stmts(else_branch, specializer, symbol_table);
+                    }
+                }
+                Stmt::While(s) => {
+                    Self::track_instantiations_in_expr(&s.condition, specializer, symbol_table);
+                    Self::track_instantiations_in_stmts(&s.body, specializer, symbol_table);
+                }
+                Stmt::For(s) => {
+                    if let Some(init) = &s.init {
+                        Self::track_instantiations_in_stmts(&[init.as_ref().clone()], specializer, symbol_table);
+                    }
+                    if let Some(condition) = &s.condition {
+                        Self::track_instantiations_in_expr(condition, specializer, symbol_table);
+                    }
+                    if let Some(increment) = &s.increment {
+                        Self::track_instantiations_in_expr(increment, specializer, symbol_table);
+                    }
+                    Self::track_instantiations_in_stmts(&s.body, specializer, symbol_table);
+                }
+                Stmt::Break(_) | Stmt::Continue(_) => {}
+            }
+        }
+    }
+
+    fn track_instantiations_in_expr(
+        expr: &crate::core::ast::expr::Expr,
+        specializer: &mut crate::frontend::semantic::specializer::Specializer,
+        symbol_table: &SymbolTable,
+    ) {
+        use crate::core::ast::expr::Expr;
+        match expr {
+            Expr::Call(c) => {
+                Self::track_instantiations_in_expr(&c.callee, specializer, symbol_table);
+                for arg in &c.args {
+                    Self::track_instantiations_in_expr(arg, specializer, symbol_table);
+                }
+            }
+            Expr::MethodCall(m) => {
+                Self::track_instantiations_in_expr(&m.receiver, specializer, symbol_table);
+                for arg in &m.args {
+                    Self::track_instantiations_in_expr(arg, specializer, symbol_table);
+                }
+            }
+            Expr::Binary(b) => {
+                Self::track_instantiations_in_expr(&b.left, specializer, symbol_table);
+                Self::track_instantiations_in_expr(&b.right, specializer, symbol_table);
+            }
+            Expr::Unary(u) => {
+                Self::track_instantiations_in_expr(&u.expr, specializer, symbol_table);
+            }
+            Expr::FieldAccess(f) => {
+                Self::track_instantiations_in_expr(&f.object, specializer, symbol_table);
+            }
+            Expr::Index(i) => {
+                Self::track_instantiations_in_expr(&i.array, specializer, symbol_table);
+                Self::track_instantiations_in_expr(&i.index, specializer, symbol_table);
+            }
+            Expr::Assignment(a) => {
+                Self::track_instantiations_in_expr(&a.target, specializer, symbol_table);
+                Self::track_instantiations_in_expr(&a.value, specializer, symbol_table);
+            }
+            Expr::ArrayLiteral(a) => {
+                for elem in &a.elements {
+                    Self::track_instantiations_in_expr(elem, specializer, symbol_table);
+                }
+            }
+            Expr::Block(b) => {
+                Self::track_instantiations_in_stmts(&b.stmts, specializer, symbol_table);
+                if let Some(expr) = &b.expr {
+                    Self::track_instantiations_in_expr(expr, specializer, symbol_table);
+                }
+            }
+            Expr::If(i) => {
+                Self::track_instantiations_in_expr(&i.condition, specializer, symbol_table);
+                Self::track_instantiations_in_expr(&i.then_branch, specializer, symbol_table);
+                if let Some(else_branch) = &i.else_branch {
+                    Self::track_instantiations_in_expr(else_branch, specializer, symbol_table);
+                }
+            }
+            Expr::Closure(c) => {
+                Self::track_instantiations_in_stmts(&c.body, specializer, symbol_table);
+            }
+            Expr::Comptime(c) => {
+                Self::track_instantiations_in_expr(&c.expr, specializer, symbol_table);
+            }
+            Expr::At(a) => {
+                Self::track_instantiations_in_expr(&a.expr, specializer, symbol_table);
+            }
+            Expr::Exists(e) => {
+                Self::track_instantiations_in_expr(&e.expr, specializer, symbol_table);
+            }
+            Expr::Ref(r) => {
+                Self::track_instantiations_in_expr(&r.expr, specializer, symbol_table);
+            }
+            Expr::Literal(_) | Expr::Variable(_) | Expr::Null => {}
+        }
+    }
+
+    fn track_type_instantiation(
+        type_: &crate::core::ast::types::Type,
+        specializer: &mut crate::frontend::semantic::specializer::Specializer,
+        symbol_table: &SymbolTable,
+    ) {
+        use crate::core::types::generic::GenericContext;
+        use crate::core::types::resolver::resolve_ast_type;
+        
+        match type_ {
+            crate::core::ast::types::Type::Named(n) if !n.generics.is_empty() => {
+                // chk if this is a generic struct being instantiated
+                if let Some(symbol) = symbol_table.resolve(&n.name) {
+                    if let crate::frontend::semantic::symbol_table::SymbolKind::Struct { .. } = &symbol.kind {
+                        // build generic context frm generics
+                        let mut context = GenericContext::new();
+                        
+                        // resolve each generic arg 2 concrete type
+                        for (i, generic_arg) in n.generics.iter().enumerate() {
+                            let resolved = resolve_ast_type(generic_arg);
+                            // use generic param name if we can find it, otherwise use index
+                            let param_name = format!("T{}", i);
+                            context.bind(param_name, resolved);
+                        }
+                        
+                        // track this instantiation
+                        specializer.track_instantiation(&n.name, context);
+                    }
+                }
+            }
+            crate::core::ast::types::Type::Array(a) => {
+                Self::track_type_instantiation(a.element.as_ref(), specializer, symbol_table);
+            }
+            crate::core::ast::types::Type::Pointer(p) => {
+                Self::track_type_instantiation(p.pointee.as_ref(), specializer, symbol_table);
+            }
+            _ => {}
+        }
     }
 
     /// resolve all require statements and load modules

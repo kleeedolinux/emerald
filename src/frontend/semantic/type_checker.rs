@@ -357,7 +357,40 @@ impl<'a> TypeChecker<'a> {
                 let array_type = self.check_expr(&i.array);
                 let _index_type = self.check_expr(&i.index);
                 match array_type {
-                    Type::Array(a) => *a.element.clone(),
+                    Type::Array(a) => {
+                        // chk array bounds 4 compile-time const indices
+                        let mut comptime_eval = crate::frontend::semantic::comptime::ComptimeEvaluator::new(
+                            self.reporter,
+                            self.file_id,
+                        );
+                        if let Some(index_value) = comptime_eval.evaluate(&i.index) {
+                            // compile-time const index - chk bounds
+                            let array_size = a.size;
+                            let index_int = match index_value {
+                                crate::frontend::semantic::comptime::ComptimeValue::Int(n) => {
+                                    if n < 0 {
+                                        self.error(i.index.span(), &format!("Array index cannot be negative: {}", n));
+                                        return Type::Primitive(crate::core::types::primitive::PrimitiveType::Void);
+                                    }
+                                    n as usize
+                                }
+                                _ => {
+                                    self.error(i.index.span(), "Array index must be an integer");
+                                    return Type::Primitive(crate::core::types::primitive::PrimitiveType::Void);
+                                }
+                            };
+                            
+                            if index_int >= array_size {
+                                self.error(
+                                    i.index.span(),
+                                    &format!("Array index out of bounds: index {} is >= array size {}", index_int, array_size)
+                                );
+                                return Type::Primitive(crate::core::types::primitive::PrimitiveType::Void);
+                            }
+                        }
+                        // Runtime bounds checking will be added in MIR generation
+                        *a.element.clone()
+                    }
                     _ => {
                         self.error(i.span, "Indexing non-array value");
                         Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)

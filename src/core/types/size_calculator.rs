@@ -67,6 +67,7 @@ impl SizeCalculator {
             Type::Pointer(_) => Ok(std::mem::size_of::<usize>()),
             Type::Generic(_) => Err("Cannot calculate size of generic type".to_string()),
             Type::Function(_) => Err("Functions don't have a size".to_string()),
+            Type::TraitObject(_) => Ok(std::mem::size_of::<usize>() * 2), // data ptr + vtable ptr
             Type::String => Ok(std::mem::size_of::<usize>() * 2), // ptr + length
         }
     }

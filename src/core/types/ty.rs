@@ -11,7 +11,14 @@ pub enum Type {
     Pointer(PointerType),
     Generic(GenericType),
     Function(FunctionType),
+    TraitObject(TraitObjectType),
     String, // first clss str type
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TraitObjectType {
+    pub trait_name: String,
+    pub constraints: Vec<String>, // optional trait bounds
 }
 
 impl Type {
@@ -23,6 +30,7 @@ impl Type {
             Type::Pointer(_) => Some(std::mem::size_of::<usize>()), // ptr size
             Type::Generic(_) => None, // unknown until monomorphization
             Type::Function(_) => None, // functions dont have a size
+            Type::TraitObject(_) => Some(std::mem::size_of::<usize>() * 2), // data ptr + vtable ptr
             Type::String => Some(std::mem::size_of::<usize>() * 2), // ptr + length
         }
     }
@@ -35,6 +43,7 @@ impl Type {
             Type::Pointer(_) => std::mem::size_of::<usize>(),
             Type::Generic(_) => 1, // unknwn
             Type::Function(_) => 1,
+            Type::TraitObject(_) => std::mem::size_of::<usize>(),
             Type::String => std::mem::size_of::<usize>(),
         }
     }
