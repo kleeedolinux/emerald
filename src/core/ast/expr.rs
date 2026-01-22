@@ -20,6 +20,8 @@ pub enum Expr {
     Closure(ClosureExpr),
     Comptime(ComptimeExpr),
     ArrayLiteral(ArrayLiteralExpr),
+    ModuleAccess(ModuleAccessExpr),
+    StructLiteral(StructLiteralExpr),
     Null,
 }
 
@@ -80,6 +82,7 @@ pub enum UnaryOp {
 pub struct CallExpr {
     pub callee: Box<Expr>,
     pub args: Vec<Expr>,
+    pub generic_args: Option<Vec<crate::core::ast::types::Type>>,
     pub span: Span,
 }
 
@@ -171,6 +174,20 @@ pub struct ArrayLiteralExpr {
     pub span: Span,
 }
 
+#[derive(Debug, Clone)]
+pub struct ModuleAccessExpr {
+    pub module: String,
+    pub member: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructLiteralExpr {
+    pub struct_name: String,
+    pub fields: Vec<(String, Expr)>,
+    pub span: Span,
+}
+
 impl Expr {
     pub fn span(&self) -> Span {
         match self {
@@ -191,6 +208,8 @@ impl Expr {
             Expr::Closure(e) => e.span,
             Expr::Comptime(e) => e.span,
             Expr::ArrayLiteral(e) => e.span,
+            Expr::ModuleAccess(e) => e.span,
+            Expr::StructLiteral(e) => e.span,
             Expr::Null => Span::new(ByteIndex(0), ByteIndex(0)),
         }
     }

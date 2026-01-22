@@ -106,9 +106,6 @@ impl<'a> SemanticAnalyzer<'a> {
         specializer: &mut crate::frontend::semantic::specializer::Specializer,
         symbol_table: &SymbolTable,
     ) {
-        use crate::core::types::generic::GenericContext;
-        use crate::core::types::resolver::resolve_ast_type;
-        
         for item in &ast.items {
             match item {
                 Item::Function(f) => {
@@ -256,6 +253,15 @@ impl<'a> SemanticAnalyzer<'a> {
             }
             Expr::Ref(r) => {
                 Self::track_instantiations_in_expr(&r.expr, specializer, symbol_table);
+            }
+            Expr::ModuleAccess(_) => {
+                // module access doesnt need tracking
+            }
+            Expr::StructLiteral(s) => {
+                // track field values
+                for (_field_name, value) in &s.fields {
+                    Self::track_instantiations_in_expr(value, specializer, symbol_table);
+                }
             }
             Expr::Literal(_) | Expr::Variable(_) | Expr::Null => {}
         }

@@ -901,8 +901,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_let(&mut self) -> Result<LetStmt, ()> {
-        let _comptime = self.check(&TokenKind::Comptime);
-        if _comptime {
+        let comptime = self.check(&TokenKind::Comptime);
+        if comptime {
             self.advance();
         }
         let mutable = self.check(&TokenKind::Mut);
@@ -926,6 +926,7 @@ impl<'a> Parser<'a> {
         Ok(LetStmt {
             name,
             mutable,
+            comptime,
             type_annotation,
             value,
             span,
@@ -1151,8 +1152,21 @@ impl<'a> Parser<'a> {
                 } else {
                     return Err(());
                 };
-                let span = self.previous().span;
-                Ok(Expr::Variable(VariableExpr { name, span }))
+                let start_span = self.previous().span;
+                // chk 4 module access: Utils::helper
+                if self.check(&TokenKind::ColonColon) {
+                    self.advance(); // ::
+                    let member = self.expect_identifier_or_keyword()?;
+                    let span = Span::new(start_span.start(), self.previous().span.end());
+                    Ok(Expr::ModuleAccess(ModuleAccessExpr {
+                        module: name,
+                        member,
+                        span,
+                    }))
+                } else {
+                    let span = start_span;
+                    Ok(Expr::Variable(VariableExpr { name, span }))
+                }
             }
             TokenKind::Size | TokenKind::Int | TokenKind::Float | TokenKind::Bool 
             | TokenKind::Char | TokenKind::String | TokenKind::Void | TokenKind::Byte 
@@ -1201,19 +1215,67 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LeftBrace => {
                 let start_span = self.advance().span; // {
-                let mut stmts = Vec::new();
-                while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
-                    stmts.push(self.parse_stmt()?);
-                }
-                let expr = if !stmts.is_empty() && self.check(&TokenKind::RightBrace) {
-                    // last statement might be an expression
-                    None
+                // chk if this is struct literal: Circle { radius: 5.0 }
+                // struct literals have field: value pairs
+                if matches!(self.peek().kind, TokenKind::Identifier(_)) {
+                    // might be struct literal - try parsing fields
+                    let mut fields = Vec::new();
+                    let mut is_struct_literal = false;
+                    loop {
+                        if self.check(&TokenKind::RightBrace) {
+                            break;
+                        }
+                        if let Ok(field_name) = self.expect_identifier_or_keyword() {
+                            if self.check(&TokenKind::Colon) {
+                                // field: value - struct literal
+                                is_struct_literal = true;
+                                self.advance(); // :
+                                let value = self.parse_expression()?;
+                                fields.push((field_name, value));
+                                if !self.check(&TokenKind::Comma) {
+                                    break;
+                                }
+                                self.advance(); // ,
+                            } else {
+                                // not struct literal - rewind and parse as block
+                                // 4 now just break and parse as block
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    self.expect(&TokenKind::RightBrace)?;
+                    if is_struct_literal {
+                        // need struct name - will be set by caller context
+                        // 4 now create w/ empty name, will be filled in parse_infix
+                        let span = Span::new(start_span.start(), self.previous().span.end());
+                        Ok(Expr::StructLiteral(StructLiteralExpr {
+                            struct_name: String::new(), // will be filled by context
+                            fields,
+                            span,
+                        }))
+                    } else {
+                        // block expression
+                        let stmts = Vec::new();
+                        let span = Span::new(start_span.start(), self.previous().span.end());
+                        Ok(Expr::Block(BlockExpr { stmts, expr: None, span }))
+                    }
                 } else {
-                    None
-                };
-                self.expect(&TokenKind::RightBrace)?;
-                let span = Span::new(start_span.start(), self.previous().span.end());
-                Ok(Expr::Block(BlockExpr { stmts, expr, span }))
+                    // block expression
+                    let mut stmts = Vec::new();
+                    while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+                        stmts.push(self.parse_stmt()?);
+                    }
+                    let expr = if !stmts.is_empty() && self.check(&TokenKind::RightBrace) {
+                        None
+                    } else {
+                        None
+                    };
+                    self.expect(&TokenKind::RightBrace)?;
+                    let span = Span::new(start_span.start(), self.previous().span.end());
+                    Ok(Expr::Block(BlockExpr { stmts, expr, span }))
+                }
             }
             TokenKind::If => {
                 let start_span = self.advance().span; // if
@@ -1381,18 +1443,26 @@ impl<'a> Parser<'a> {
                 Ok(Expr::Call(CallExpr {
                     callee: Box::new(left),
                     args,
+                    generic_args: None,
                     span,
                 }))
             }
-            TokenKind::LeftBracket => {
+            TokenKind::ColonColon => {
+                // module access: Utils::helper
                 let start = left.span();
-                self.advance(); // [
-                let index = self.parse_expression()?;
-                self.expect(&TokenKind::RightBracket)?;
+                self.advance(); // ::
+                let member = self.expect_identifier_or_keyword()?;
                 let span = Span::new(start.start(), self.previous().span.end());
-                Ok(Expr::Index(IndexExpr {
-                    array: Box::new(left),
-                    index: Box::new(index),
+                Ok(Expr::ModuleAccess(ModuleAccessExpr {
+                    module: match &left {
+                        Expr::Variable(v) => v.name.clone(),
+                        Expr::ModuleAccess(m) => format!("{}::{}", m.module, m.member),
+                        _ => {
+                            self.error("Expected module name before ::");
+                            return Err(());
+                        }
+                    },
+                    member,
                     span,
                 }))
             }
@@ -1544,6 +1614,7 @@ impl<'a> Parser<'a> {
         Ok(Expr::Call(CallExpr {
             callee: Box::new(callee),
             args,
+            generic_args: None,
             span,
         }))
     }
@@ -1577,7 +1648,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Plus | TokenKind::Minus => Precedence::Term,
             TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Precedence::Factor,
-            TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::Dot => Precedence::Call,
+            TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace | TokenKind::Dot | TokenKind::ColonColon => Precedence::Call,
             _ => Precedence::None,
         }
     }

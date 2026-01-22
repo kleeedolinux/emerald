@@ -24,6 +24,8 @@ pub trait AstVisitor {
             Expr::Closure(e) => self.visit_closure(e),
             Expr::Comptime(e) => self.visit_comptime(e),
             Expr::ArrayLiteral(e) => self.visit_array_literal(e),
+            Expr::ModuleAccess(e) => self.visit_module_access(e),
+            Expr::StructLiteral(e) => self.visit_struct_literal(e),
             Expr::Null => self.visit_null(),
         }
     }
@@ -129,6 +131,17 @@ pub trait AstVisitor {
     fn visit_array_literal(&mut self, expr: &crate::core::ast::expr::ArrayLiteralExpr) -> Self::Result {
         for element in &expr.elements {
             self.visit_expr(element);
+        }
+        unimplemented!()
+    }
+
+    fn visit_module_access(&mut self, _expr: &crate::core::ast::expr::ModuleAccessExpr) -> Self::Result {
+        unimplemented!()
+    }
+
+    fn visit_struct_literal(&mut self, expr: &crate::core::ast::expr::StructLiteralExpr) -> Self::Result {
+        for (_field_name, value) in &expr.fields {
+            self.visit_expr(value);
         }
         unimplemented!()
     }

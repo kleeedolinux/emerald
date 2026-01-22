@@ -23,6 +23,7 @@ pub struct ExprStmt {
 pub struct LetStmt {
     pub name: String,
     pub mutable: bool,
+    pub comptime: bool,
     pub type_annotation: Option<Type>,
     pub value: Option<Expr>,
     pub span: Span,

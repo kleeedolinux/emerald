@@ -214,6 +214,15 @@ impl<'a> LifetimeChecker<'a> {
             Expr::Exists(e) => {
                 self.check_expr(&e.expr);
             }
+            Expr::ModuleAccess(_) => {
+                // module access doesnt need lifetime checking
+            }
+            Expr::StructLiteral(s) => {
+                // chk field values
+                for (_field_name, value) in &s.fields {
+                    self.check_expr(value);
+                }
+            }
             Expr::Literal(_) | Expr::Null => {}
         }
     }

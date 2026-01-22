@@ -74,6 +74,17 @@ impl<'a> TypeChecker<'a> {
                 
                 let annotated_type = resolve_ast_type(s.type_annotation.as_ref().unwrap());
                 
+                // if comptime, evaluate at compile time
+                if s.comptime {
+                    if let Some(value) = &s.value {
+                        let mut evaluator = crate::frontend::semantic::comptime::ComptimeEvaluator::new(self.reporter, self.file_id);
+                        if let Some(_comptime_value) = evaluator.evaluate(value) {
+                            // comptime var evaluated - store value 4 later use
+                            // 4 now just type check normally
+                        }
+                    }
+                }
+                
                 // var should already be defined by resolver, but ensure it exists
                 if self.symbol_table.resolve(&s.name).is_none() {
                     let symbol = crate::frontend::semantic::symbol_table::Symbol {
@@ -217,6 +228,13 @@ impl<'a> TypeChecker<'a> {
                     Type::String
                 }
             },
+            Expr::ModuleAccess(m) => {
+                // resolve module access: Utils::helper
+                // lookup module in symbol table and resolve member
+                // 4 now return void - proper impl wld resolve module members
+                self.error(m.span, &format!("Module access '{}::{}' not yet fully supported", m.module, m.member));
+                Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+            }
             Expr::Variable(v) => {
                 eprintln!("[DEBUG] chking var: {}", v.name);
                 if let Some(symbol) = self.symbol_table.resolve(&v.name) {
@@ -281,6 +299,22 @@ impl<'a> TypeChecker<'a> {
                         // chk arg types match param types (allow generic inference)
                         for (i, (arg, param_type)) in c.args.iter().zip(f.params.iter()).enumerate() {
                             let arg_type = self.check_expr(arg);
+                            // if param is ref char and arg is string literal, allow it
+                            let compatible = if let Type::Pointer(p) = param_type {
+                                if let crate::core::types::pointer::PointerType { pointee, nullable: false } = p {
+                                    if let Type::Primitive(crate::core::types::primitive::PrimitiveType::Char) = &**pointee {
+                                        // param is ref char - allow string literals
+                                        matches!(arg, Expr::Literal(l) if matches!(l.kind, crate::core::ast::expr::LiteralKind::String(_)))
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+                            
                             // if param is generic, infer from arg
                             if let Type::Generic(gp) = param_type {
                                 // substitute generic in ret type if same name
@@ -289,7 +323,7 @@ impl<'a> TypeChecker<'a> {
                                         return_type = Box::new(arg_type.clone());
                                     }
                                 }
-                            } else if !self.types_compatible(param_type, &arg_type) {
+                            } else if !compatible && !self.types_compatible(param_type, &arg_type) {
                                 self.error(arg.span(), &format!("Argument {} type mismatch: expected {:?}, got {:?}", i, param_type, arg_type));
                             }
                         }
@@ -641,6 +675,13 @@ impl<'a> TypeChecker<'a> {
                     false
                 };
                 
+                // allow null assignment to generic struct types
+                let is_null_assignment = matches!(&*a.value, Expr::Null);
+                if is_null_assignment && (is_generic || is_potentially_generic) {
+                    // allow null assignment to generic types
+                    return value_type;
+                }
+                
                 eprintln!("[DEBUG] type compat chk: target={:?}, value={:?}, is_generic={}, is_potentially_generic={}", target_type, value_type, is_generic, is_potentially_generic);
                 
                 let is_void_placeholder = matches!(target_type, Type::Primitive(crate::core::types::primitive::PrimitiveType::Void));
@@ -689,6 +730,46 @@ impl<'a> TypeChecker<'a> {
                     params: Vec::new(),
                     return_type: Box::new(Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)),
                 })
+            }
+            Expr::StructLiteral(s) => {
+                // chk struct literal: Circle { radius: 5.0 }
+                // lookup struct definition
+                if let Some(symbol) = self.symbol_table.resolve(&s.struct_name) {
+                    if let crate::frontend::semantic::symbol_table::SymbolKind::Struct { fields } = &symbol.kind {
+                        // clone fields to avoid borrow checker issues
+                        let fields_clone: Vec<(String, Type)> = fields.clone();
+                        // chk each field matches struct definition
+                        for (field_name, field_value) in &s.fields {
+                            let value_type = self.check_expr(field_value);
+                            if let Some((_, expected_type)) = fields_clone.iter().find(|(name, _)| name == field_name) {
+                                if !self.types_compatible(expected_type, &value_type) {
+                                    self.error(field_value.span(), &format!("Field '{}' type mismatch: expected {:?}, got {:?}", field_name, expected_type, value_type));
+                                }
+                            } else {
+                                self.error(s.span, &format!("Field '{}' not found in struct '{}'", field_name, s.struct_name));
+                            }
+                        }
+                        // return struct type
+                        Type::Struct(crate::core::types::composite::StructType {
+                            name: s.struct_name.clone(),
+                            fields: fields_clone.iter().map(|(name, type_)| {
+                                crate::core::types::composite::Field {
+                                    name: name.clone(),
+                                    type_: type_.clone(),
+                                    offset: None,
+                                }
+                            }).collect(),
+                            size: None,
+                            align: None,
+                        })
+                    } else {
+                        self.error(s.span, &format!("'{}' is not a struct", s.struct_name));
+                        Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                    }
+                } else {
+                    self.error(s.span, &format!("Undefined struct '{}'", s.struct_name));
+                    Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                }
             }
             Expr::ArrayLiteral(a) => {
                 // infer array type from elements

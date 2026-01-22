@@ -598,6 +598,53 @@ impl HirLowerer {
                 })
             }
             Expr::Null => HirExpr::Null,
+            Expr::StructLiteral(s) => {
+                // struct literal: Circle { radius: 5.0 }
+                // lower field values
+                let mut field_values = Vec::new();
+                for (_field_name, value) in &s.fields {
+                    field_values.push(self.lower_expr(value));
+                }
+                // get struct type
+                let _struct_type = if let Some(symbol) = self.symbol_table.resolve(&s.struct_name) {
+                    if let crate::frontend::semantic::symbol_table::SymbolKind::Struct { fields } = &symbol.kind {
+                        ResolvedType::Struct(crate::core::types::composite::StructType {
+                            name: s.struct_name.clone(),
+                            fields: fields.iter().map(|(name, type_)| {
+                                crate::core::types::composite::Field {
+                                    name: name.clone(),
+                                    type_: type_.clone(),
+                                    offset: None,
+                                }
+                            }).collect(),
+                            size: None,
+                            align: None,
+                        })
+                    } else {
+                        ResolvedType::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                    }
+                } else {
+                    ResolvedType::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                };
+                // 4 now return null - proper impl wld create struct instance
+                HirExpr::Null
+            }
+            Expr::ModuleAccess(m) => {
+                // module access: Utils::helper
+                // 4 now treat as variable - proper impl wld resolve module members
+                HirExpr::Variable(HirVariableExpr {
+                    name: format!("{}::{}", m.module, m.member),
+                    symbol: HirSymbol::new(
+                        format!("{}::{}", m.module, m.member),
+                        ResolvedType::Primitive(crate::core::types::primitive::PrimitiveType::Void),
+                        false,
+                        0,
+                        m.span,
+                    ),
+                    type_: ResolvedType::Primitive(crate::core::types::primitive::PrimitiveType::Void),
+                    span: m.span,
+                })
+            }
             Expr::ArrayLiteral(a) => {
                 let elements: Vec<HirExpr> = a.elements.iter().map(|e| self.lower_expr(e)).collect();
                 // infer array type from elements

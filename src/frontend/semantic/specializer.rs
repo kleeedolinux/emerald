@@ -209,6 +209,7 @@ impl Specializer {
                 Stmt::Let(LetStmt {
                     name: s.name.clone(),
                     mutable: s.mutable,
+                    comptime: s.comptime,
                     type_annotation: s.type_annotation.as_ref().map(|t| {
                         self.substitute_ast_type(t, context)
                     }),
@@ -302,6 +303,7 @@ impl Specializer {
                     args: c.args.iter().map(|arg| {
                         self.specialize_expr(arg, context)
                     }).collect(),
+                    generic_args: c.generic_args.clone(),
                     span: c.span,
                 })
             }
@@ -398,6 +400,18 @@ impl Specializer {
                 Expr::Exists(ExistsExpr {
                     expr: Box::new(self.specialize_expr(&e.expr, context)),
                     span: e.span,
+                })
+            }
+            Expr::ModuleAccess(m) => {
+                Expr::ModuleAccess(m.clone())
+            }
+            Expr::StructLiteral(s) => {
+                Expr::StructLiteral(StructLiteralExpr {
+                    struct_name: s.struct_name.clone(),
+                    fields: s.fields.iter().map(|(name, value)| {
+                        (name.clone(), self.specialize_expr(value, context))
+                    }).collect(),
+                    span: s.span,
                 })
             }
         }
