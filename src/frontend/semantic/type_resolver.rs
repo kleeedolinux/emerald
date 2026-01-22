@@ -69,13 +69,15 @@ impl<'a> TypeResolver<'a> {
     fn resolve_item_types(&mut self, item: &Item, symbol_table: &mut SymbolTable, graph: &mut DependencyGraph) {
         match item {
             Item::Function(f) => {
-                // rslv fn prm and ret types
+                // build generic params set
+                let generic_params: std::collections::HashSet<String> = f.generics.iter().map(|g| g.name.clone()).collect();
+                // rslv fn prm and ret types w/ generic context
                 let params: Vec<crate::core::types::ty::Type> = f
                     .params
                     .iter()
-                    .map(|p| resolve_ast_type(&p.type_))
+                    .map(|p| crate::core::types::resolver::resolve_ast_type_with_context(&p.type_, &generic_params))
                     .collect();
-                let return_type = f.return_type.as_ref().map(|t| resolve_ast_type(t));
+                let return_type = f.return_type.as_ref().map(|t| crate::core::types::resolver::resolve_ast_type_with_context(t, &generic_params));
 
                 if let Some(symbol) = symbol_table.resolve_mut(&f.name) {
                     if let SymbolKind::Function { params: ref mut p, return_type: ref mut rt } = symbol.kind {
@@ -85,14 +87,16 @@ impl<'a> TypeResolver<'a> {
                 }
             }
             Item::Struct(s) => {
-                // rslv struct field types
+                // build generic params set
+                let generic_params: std::collections::HashSet<String> = s.generics.iter().map(|g| g.name.clone()).collect();
+                // rslv struct field types w/ generic context
                 let fields: Vec<(String, crate::core::types::ty::Type)> = s
                     .fields
                     .iter()
                     .map(|f| {
                         (
                             f.name.clone(),
-                            resolve_ast_type(&f.type_),
+                            crate::core::types::resolver::resolve_ast_type_with_context(&f.type_, &generic_params),
                         )
                     })
                     .collect();
@@ -100,7 +104,7 @@ impl<'a> TypeResolver<'a> {
                 // extrct dependencies 4 cycle dtctn
                 let mut deps = Vec::new();
                 for field in &s.fields {
-                    let field_type = resolve_ast_type(&field.type_);
+                    let field_type = crate::core::types::resolver::resolve_ast_type_with_context(&field.type_, &generic_params);
                     let field_deps = DependencyGraph::extract_dependencies(&field_type);
                     deps.extend(field_deps);
                 }
@@ -123,28 +127,30 @@ impl<'a> TypeResolver<'a> {
                     let _ = symbol_table.define(s.name.clone(), symbol);
                 }
 
-                // calculate strct size
-                let struct_type = crate::core::types::composite::StructType {
-                    name: s.name.clone(),
-                    fields: fields.iter().map(|(name, type_)| {
-                        crate::core::types::composite::Field {
-                            name: name.clone(),
-                            type_: type_.clone(),
-                            offset: None,
-                        }
-                    }).collect(),
-                    size: None,
-                    align: None,
-                };
-                if let Err(e) = self.size_calculator.calculate_size(&struct_type) {
-                    // size calculaiton failed report err
-                    let diagnostic = Diagnostic::error(
-                        DiagnosticKind::SemanticError,
-                        s.span,
-                        self.file_id,
-                        format!("Failed to calculate size for struct '{}': {}", s.name, e),
-                    );
-                    self.reporter.add_diagnostic(diagnostic);
+                // calculate strct size (skip if generic)
+                if s.generics.is_empty() {
+                    let struct_type = crate::core::types::composite::StructType {
+                        name: s.name.clone(),
+                        fields: fields.iter().map(|(name, type_)| {
+                            crate::core::types::composite::Field {
+                                name: name.clone(),
+                                type_: type_.clone(),
+                                offset: None,
+                            }
+                        }).collect(),
+                        size: None,
+                        align: None,
+                    };
+                    if let Err(e) = self.size_calculator.calculate_size(&struct_type) {
+                        // size calculaiton failed report err
+                        let diagnostic = Diagnostic::error(
+                            DiagnosticKind::SemanticError,
+                            s.span,
+                            self.file_id,
+                            format!("Failed to calculate size for struct '{}': {}", s.name, e),
+                        );
+                        self.reporter.add_diagnostic(diagnostic);
+                    }
                 }
             }
             Item::Trait(t) => {

@@ -37,6 +37,7 @@ impl<'a> ComptimeEvaluator<'a> {
                 self.evaluate(&c.expr)
             }
             Expr::Variable(v) => {
+                self.error(v.span, &format!("Variable '{}' cannot be used in comptime expression - only constants are allowed", v.name));
                 None
             }
             _ => {

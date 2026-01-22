@@ -51,7 +51,9 @@ impl<'a> TypeChecker<'a> {
                     let _ = self.symbol_table.define(param.name.clone(), symbol);
                 }
                 if let Some(body) = &f.body {
-                    for stmt in body {
+                    eprintln!("[DEBUG] fn body has {} stmts", body.len());
+                    for (i, stmt) in body.iter().enumerate() {
+                        eprintln!("[DEBUG] processing stmt {} of {}", i, body.len());
                         self.check_stmt(stmt);
                     }
                 }
@@ -89,14 +91,26 @@ impl<'a> TypeChecker<'a> {
                 // now chk the vl expression
                 if let Some(value) = &s.value {
                     let value_type = self.check_expr(value);
-                    if !self.types_compatible(&annotated_type, &value_type) {
+                    // dont allow generic types in assignments - must be concrete
+                    if matches!(value_type, Type::Generic(_)) {
                         self.error(
                             s.span,
                             &format!(
-                                "Type mismatch: expected {:?}, got {:?}",
-                                annotated_type, value_type
+                                "Type mismatch: expected {:?}, got generic type",
+                                annotated_type
                             ),
                         );
+                    } else if annotated_type != value_type {
+                        // strict check - no numeric promotion in assignments
+                        if !self.types_compatible_strict(&annotated_type, &value_type) {
+                            self.error(
+                                s.span,
+                                &format!(
+                                    "Type mismatch: expected {:?}, got {:?}",
+                                    annotated_type, value_type
+                                ),
+                            );
+                        }
                     }
                 }
                 
@@ -108,11 +122,16 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Stmt::Return(s) => {
+                eprintln!("[DEBUG] chking return stmt");
                 if let Some(value) = &s.value {
+                    eprintln!("[DEBUG] return has value expr");
                     self.check_expr(value);
+                } else {
+                    eprintln!("[DEBUG] return has no value");
                 }
             }
             Stmt::Expr(s) => {
+                eprintln!("[DEBUG] chking expr stmt");
                 self.check_expr(&s.expr);
             }
             Stmt::If(s) => {
@@ -184,13 +203,16 @@ impl<'a> TypeChecker<'a> {
                 }
             },
             Expr::Variable(v) => {
+                eprintln!("[DEBUG] chking var: {}", v.name);
                 if let Some(symbol) = self.symbol_table.resolve(&v.name) {
+                    eprintln!("[DEBUG] var {} found in sym tbl, kind: {:?}", v.name, std::mem::discriminant(&symbol.kind));
                     match &symbol.kind {
                         crate::frontend::semantic::symbol_table::SymbolKind::Variable { type_, .. } => {
+                            eprintln!("[DEBUG] var {} is variable, type: {:?}", v.name, type_);
                             type_.clone()
                         }
                         crate::frontend::semantic::symbol_table::SymbolKind::Function { params, return_type } => {
-                            // convrt fn symbol 2 fnctntyp
+                            eprintln!("[DEBUG] var {} is function", v.name);
                             let return_type = return_type.clone().unwrap_or_else(|| {
                                 Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
                             });
@@ -200,11 +222,27 @@ impl<'a> TypeChecker<'a> {
                             })
                         }
                         _ => {
+                            eprintln!("[DEBUG] var {} is not var or fn", v.name);
                             self.error(v.span, &format!("'{}' is not a variable or function", v.name));
                             Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
                         }
                     }
                 } else {
+                    eprintln!("[DEBUG] ERROR: var {} not found in sym tbl! defining w/ void type for err recovery", v.name);
+                    let placeholder_symbol = crate::frontend::semantic::symbol_table::Symbol {
+                        name: v.name.clone(),
+                        kind: crate::frontend::semantic::symbol_table::SymbolKind::Variable {
+                            mutable: false,
+                            type_: Type::Primitive(crate::core::types::primitive::PrimitiveType::Void),
+                        },
+                        span: v.span,
+                        defined: true,
+                    };
+                    if let Err(e) = self.symbol_table.define(v.name.clone(), placeholder_symbol) {
+                        eprintln!("[DEBUG] failed to define placeholder for {}: {}", v.name, e);
+                    } else {
+                        eprintln!("[DEBUG] defined placeholder var {} for err recovery", v.name);
+                    }
                     self.error(v.span, &format!("Undefined variable '{}'", v.name));
                     Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
                 }
@@ -222,7 +260,26 @@ impl<'a> TypeChecker<'a> {
                 let callee_type = self.check_expr(&c.callee);
                 // chk fn call get ret type frmo fn type
                 match callee_type {
-                    Type::Function(f) => *f.return_type.clone(),
+                    Type::Function(f) => {
+                        // infer generic types from args
+                        let mut return_type = f.return_type.clone();
+                        // chk arg types match param types (allow generic inference)
+                        for (i, (arg, param_type)) in c.args.iter().zip(f.params.iter()).enumerate() {
+                            let arg_type = self.check_expr(arg);
+                            // if param is generic, infer from arg
+                            if let Type::Generic(gp) = param_type {
+                                // substitute generic in ret type if same name
+                                if let Type::Generic(gr) = &*return_type {
+                                    if gp.name == gr.name {
+                                        return_type = Box::new(arg_type.clone());
+                                    }
+                                }
+                            } else if !self.types_compatible(param_type, &arg_type) {
+                                self.error(arg.span(), &format!("Argument {} type mismatch: expected {:?}, got {:?}", i, param_type, arg_type));
+                            }
+                        }
+                        *return_type
+                    }
                     _ => {
                         self.error(c.span, "Calling non-function value");
                         Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
@@ -234,8 +291,51 @@ impl<'a> TypeChecker<'a> {
                 if let Some((_method_name, _params, return_type)) = self.trait_resolver.resolve_method_call(&receiver_type, &m.method) {
                     return_type.clone().unwrap_or(Type::Primitive(crate::core::types::primitive::PrimitiveType::Void))
                 } else {
-                    self.error(m.span, &format!("Method '{}' not found on type", m.method));
-                    Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                    // Fallback: check if this is actually a field access on a pointer pointee
+                    match &receiver_type {
+                        Type::Pointer(p) => {
+                            match &*p.pointee {
+                                Type::Struct(s) => {
+                                    // if struct has no fields (generic type), look it up in symbol table
+                                    let fields = if s.fields.is_empty() {
+                                        if let Some(symbol) = self.symbol_table.resolve(&s.name) {
+                                            if let crate::frontend::semantic::symbol_table::SymbolKind::Struct { fields } = &symbol.kind {
+                                                fields.iter().map(|(name, type_)| {
+                                                    crate::core::types::composite::Field {
+                                                        name: name.clone(),
+                                                        type_: type_.clone(),
+                                                        offset: None,
+                                                    }
+                                                }).collect()
+                                            } else {
+                                                Vec::new()
+                                            }
+                                        } else {
+                                            Vec::new()
+                                        }
+                                    } else {
+                                        s.fields.clone()
+                                    };
+                                    
+                                    if let Some(field) = fields.iter().find(|field| field.name == m.method) {
+                                        // This is actually a field access, not a method call
+                                        field.type_.clone()
+                                    } else {
+                                        self.error(m.span, &format!("Method '{}' not found on type", m.method));
+                                        Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                                    }
+                                }
+                                _ => {
+                                    self.error(m.span, &format!("Method '{}' not found on type", m.method));
+                                    Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                                }
+                            }
+                        }
+                        _ => {
+                            self.error(m.span, &format!("Method '{}' not found on type", m.method));
+                            Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                        }
+                    }
                 }
             }
             Expr::Index(i) => {
@@ -250,43 +350,57 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::FieldAccess(f) => {
+                eprintln!("[DEBUG] chking field access: field={}", f.field);
                 let object_type = self.check_expr(&f.object);
+                eprintln!("[DEBUG] field access object type: {:?}", object_type);
                 match object_type {
                     Type::Struct(s) => {
-                        // if struct has no fields (generic type), look it up in symbol table
-                        let fields = if s.fields.is_empty() {
-                            if let Some(symbol) = self.symbol_table.resolve(&s.name) {
-                                if let crate::frontend::semantic::symbol_table::SymbolKind::Struct { fields } = &symbol.kind {
-                                    fields.iter().map(|(name, type_)| {
-                                        crate::core::types::composite::Field {
-                                            name: name.clone(),
-                                            type_: type_.clone(),
-                                            offset: None,
-                                        }
-                                    }).collect()
-                                } else {
-                                    Vec::new()
-                                }
+                        eprintln!("[DEBUG] object is struct: {}", s.name);
+                        // always lookup struct in sym tbl to get fields
+                        let fields = if let Some(symbol) = self.symbol_table.resolve(&s.name) {
+                            eprintln!("[DEBUG] found struct {} in sym tbl", s.name);
+                            if let crate::frontend::semantic::symbol_table::SymbolKind::Struct { fields } = &symbol.kind {
+                                eprintln!("[DEBUG] struct {} has {} fields in sym tbl", s.name, fields.len());
+                                fields.iter().map(|(name, type_)| {
+                                    crate::core::types::composite::Field {
+                                        name: name.clone(),
+                                        type_: type_.clone(),
+                                        offset: None,
+                                    }
+                                }).collect()
+                            } else if !s.fields.is_empty() {
+                                eprintln!("[DEBUG] struct {} sym tbl entry not struct kind, using s.fields", s.name);
+                                s.fields.clone()
                             } else {
+                                eprintln!("[DEBUG] struct {} sym tbl entry not struct kind and s.fields empty", s.name);
                                 Vec::new()
                             }
-                        } else {
+                        } else if !s.fields.is_empty() {
+                            eprintln!("[DEBUG] struct {} not in sym tbl, using s.fields", s.name);
                             s.fields.clone()
+                        } else {
+                            eprintln!("[DEBUG] struct {} not in sym tbl and s.fields empty!", s.name);
+                            Vec::new()
                         };
                         
+                        eprintln!("[DEBUG] looking for field {} in {} fields", f.field, fields.len());
                         if let Some(field) = fields.iter().find(|field| field.name == f.field) {
-                            // Return the field type - if it's generic, assignments will be allowed
+                            eprintln!("[DEBUG] found field {}, type: {:?}", f.field, field.type_);
                             field.type_.clone()
                         } else {
-                            self.error(f.span, &format!("Field '{}' not found", f.field));
+                            eprintln!("[DEBUG] field {} not found in struct {}", f.field, s.name);
+                            self.error(f.span, &format!("Field '{}' not found on struct '{}'", f.field, s.name));
                             Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
                         }
                     }
                     Type::Pointer(p) => {
+                        eprintln!("[DEBUG] object is pointer, nullable={}", p.nullable);
                         // ptrvalue dereferenc
                         if f.field == "value" {
+                            eprintln!("[DEBUG] accessing pointer.value");
                             *p.pointee.clone()
                         } else if f.field == "exists?" {
+                            eprintln!("[DEBUG] accessing pointer.exists?");
                             // exists? chk 4 nullable pntrs
                             if p.nullable {
                                 Type::Primitive(crate::core::types::primitive::PrimitiveType::Bool)
@@ -295,11 +409,58 @@ impl<'a> TypeChecker<'a> {
                                 Type::Primitive(crate::core::types::primitive::PrimitiveType::Bool)
                             }
                         } else {
-                            self.error(f.span, &format!("Field '{}' not found on pointer", f.field));
-                            Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                            eprintln!("[DEBUG] accessing field {} on pointer pointee", f.field);
+                            // field access on pointer pointee - chk if pointee is struct
+                            match &*p.pointee {
+                                Type::Struct(s) => {
+                                    eprintln!("[DEBUG] pointer pointee is struct: {}", s.name);
+                                    // always lookup struct in sym tbl
+                                    let fields = if let Some(symbol) = self.symbol_table.resolve(&s.name) {
+                                        eprintln!("[DEBUG] found struct {} in sym tbl for pointer pointee", s.name);
+                                        if let crate::frontend::semantic::symbol_table::SymbolKind::Struct { fields } = &symbol.kind {
+                                            eprintln!("[DEBUG] struct {} has {} fields", s.name, fields.len());
+                                            fields.iter().map(|(name, type_)| {
+                                                crate::core::types::composite::Field {
+                                                    name: name.clone(),
+                                                    type_: type_.clone(),
+                                                    offset: None,
+                                                }
+                                            }).collect()
+                                        } else if !s.fields.is_empty() {
+                                            eprintln!("[DEBUG] struct {} sym tbl entry not struct kind, using s.fields", s.name);
+                                            s.fields.clone()
+                                        } else {
+                                            eprintln!("[DEBUG] struct {} sym tbl entry not struct kind and s.fields empty", s.name);
+                                            Vec::new()
+                                        }
+                                    } else if !s.fields.is_empty() {
+                                        eprintln!("[DEBUG] struct {} not in sym tbl, using s.fields", s.name);
+                                        s.fields.clone()
+                                    } else {
+                                        eprintln!("[DEBUG] struct {} not in sym tbl and s.fields empty!", s.name);
+                                        Vec::new()
+                                    };
+                                    
+                                    eprintln!("[DEBUG] looking for field {} in {} fields on pointer pointee", f.field, fields.len());
+                                    if let Some(field) = fields.iter().find(|field| field.name == f.field) {
+                                        eprintln!("[DEBUG] found field {} on pointer pointee, type: {:?}", f.field, field.type_);
+                                        field.type_.clone()
+                                    } else {
+                                        eprintln!("[DEBUG] field {} not found on pointer pointee {}", f.field, s.name);
+                                        self.error(f.span, &format!("Field '{}' not found on pointer pointee '{}'", f.field, s.name));
+                                        Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                                    }
+                                }
+                                _ => {
+                                    eprintln!("[DEBUG] pointer pointee is not struct, cannot access field {}", f.field);
+                                    self.error(f.span, &format!("Field '{}' not found on pointer", f.field));
+                                    Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
+                                }
+                            }
                         }
                     }
                     _ => {
+                        eprintln!("[DEBUG] field access on non-struct/pointer value, type: {:?}", object_type);
                         self.error(f.span, "Field access on non-struct/pointer value");
                         Type::Primitive(crate::core::types::primitive::PrimitiveType::Void)
                     }
@@ -369,49 +530,81 @@ impl<'a> TypeChecker<'a> {
                 then_type
             }
             Expr::Assignment(a) => {
-                let target_type = if let Expr::Variable(v) = &*a.target {
-                    if self.symbol_table.resolve(&v.name).is_none() {
-                        // Variable doesn't exist - infer type from value
-                        // This allows assignments like "a = 10 + 20" without explicit type annotation
-                        let value_type = self.check_expr(&a.value);
-                        let symbol = crate::frontend::semantic::symbol_table::Symbol {
-                            name: v.name.clone(),
+                eprintln!("[DEBUG] chking assignment expr");
+                let var_name = if let Expr::Variable(v) = &*a.target {
+                    eprintln!("[DEBUG] assignment lhs is var: {}", v.name);
+                    Some(v.name.clone())
+                } else {
+                    eprintln!("[DEBUG] assignment lhs is not var, is field access or other");
+                    None
+                };
+                
+                if let Some(name) = &var_name {
+                    eprintln!("[DEBUG] chking if var {} exists in sym tbl", name);
+                    if self.symbol_table.resolve(name).is_none() {
+                        eprintln!("[DEBUG] var {} not found, defining w/ placeholder void type", name);
+                        let placeholder_symbol = crate::frontend::semantic::symbol_table::Symbol {
+                            name: name.clone(),
                             kind: crate::frontend::semantic::symbol_table::SymbolKind::Variable {
                                 mutable: false,
-                                type_: value_type.clone(),
+                                type_: Type::Primitive(crate::core::types::primitive::PrimitiveType::Void),
                             },
-                            span: v.span,
+                            span: a.target.span(),
                             defined: true,
                         };
-                        let _ = self.symbol_table.define(v.name.clone(), symbol);
-                        return value_type;
+                        match self.symbol_table.define(name.clone(), placeholder_symbol) {
+                            Ok(_) => {
+                                eprintln!("[DEBUG] var {} defined w/ placeholder type", name);
+                            }
+                            Err(e) => {
+                                eprintln!("[DEBUG] failed to define var {}: {}", name, e);
+                                self.error(a.target.span(), &e);
+                            }
+                        }
                     } else {
-                        // Variable exists - check compatibility
-                        self.check_expr(&a.target)
+                        eprintln!("[DEBUG] var {} already exists in sym tbl", name);
                     }
-                } else {
-                    // Not a variable assignment - check the target type
-                    // For field access on generic structs, we might get Generic type
-                    self.check_expr(&a.target)
-                };
+                }
+                
+                eprintln!("[DEBUG] chking rhs expr");
                 let value_type = self.check_expr(&a.value);
+                eprintln!("[DEBUG] rhs expr type: {:?}", value_type);
                 
-                // If target type is generic, allow assignment (generic will be inferred/substituted)
-                // This handles cases like b.item = 42 where item has type Generic(T)
+                eprintln!("[DEBUG] chking target type");
+                let target_type = self.check_expr(&a.target);
+                eprintln!("[DEBUG] target type: {:?}", target_type);
+                
+                if let Some(name) = &var_name {
+                    eprintln!("[DEBUG] updting var {} type to {:?}", name, value_type);
+                    if let Some(symbol) = self.symbol_table.resolve_mut(name) {
+                        if let crate::frontend::semantic::symbol_table::SymbolKind::Variable { type_, .. } = &mut symbol.kind {
+                            *type_ = value_type.clone();
+                            eprintln!("[DEBUG] var {} type updtd to {:?}", name, value_type);
+                        }
+                    } else {
+                        eprintln!("[DEBUG] WARNING: var {} not found in sym tbl for updt!", name);
+                    }
+                }
+                
                 let is_generic = matches!(target_type, Type::Generic(_));
-                
-                // Also check if target is a struct with empty fields - this might be a generic parameter
-                // that was incorrectly resolved as a struct (e.g., T -> StructType { name: "T", fields: [] })
                 let is_potentially_generic = if let Type::Struct(s) = &target_type {
                     s.fields.is_empty() && !self.symbol_table.resolve(&s.name).is_some()
                 } else {
                     false
                 };
                 
-                // Also check types_compatible which already handles generic types
-                if !is_generic && !is_potentially_generic && !self.types_compatible(&target_type, &value_type) {
+                eprintln!("[DEBUG] type compat chk: target={:?}, value={:?}, is_generic={}, is_potentially_generic={}", target_type, value_type, is_generic, is_potentially_generic);
+                
+                let is_void_placeholder = matches!(target_type, Type::Primitive(crate::core::types::primitive::PrimitiveType::Void));
+                
+                if !is_generic && !is_potentially_generic && !is_void_placeholder && !self.types_compatible(&target_type, &value_type) {
+                    eprintln!("[DEBUG] type mismatch err: expected {:?}, got {:?}", target_type, value_type);
                     self.error(a.span, &format!("Type mismatch in assignment: expected {:?}, got {:?}", target_type, value_type));
+                } else {
+                    eprintln!("[DEBUG] types compatible, assignment ok");
                 }
+                
+                eprintln!("[DEBUG] assignment chk complete, ret type: {:?}", value_type);
                 value_type
             }
             Expr::Comptime(c) => {
@@ -550,10 +743,57 @@ impl<'a> TypeChecker<'a> {
         if a == b {
             return true;
         }
+        // null is compatible with any pointer (nullable or not)
+        if let Type::Pointer(pa) = a {
+            if pa.nullable && *pa.pointee == Type::Primitive(crate::core::types::primitive::PrimitiveType::Void) {
+                // null literal - compatible w/ any pointer
+                if matches!(b, Type::Pointer(_)) {
+                    return true;
+                }
+            }
+        }
+        if let Type::Pointer(pb) = b {
+            if pb.nullable && *pb.pointee == Type::Primitive(crate::core::types::primitive::PrimitiveType::Void) {
+                // null literal - compatible w/ any pointer
+                if matches!(a, Type::Pointer(_)) {
+                    return true;
+                }
+            }
+        }
         // allow numeric type promotion
         if self.is_numeric_type(a) && self.is_numeric_type(b) {
             return true;
         }
+        // str literals can be assigned 2 str type
+        if matches!(a, Type::String) && matches!(b, Type::String) {
+            return true;
+        }
+        if matches!(a, Type::Generic(_)) || matches!(b, Type::Generic(_)) {
+            return true;
+        }
+        false
+    }
+
+    fn types_compatible_strict(&self, a: &Type, b: &Type) -> bool {
+        if a == b {
+            return true;
+        }
+        // null is compatible with any pointer (nullable or not)
+        if let Type::Pointer(pa) = a {
+            if pa.nullable && *pa.pointee == Type::Primitive(crate::core::types::primitive::PrimitiveType::Void) {
+                if matches!(b, Type::Pointer(_)) {
+                    return true;
+                }
+            }
+        }
+        if let Type::Pointer(pb) = b {
+            if pb.nullable && *pb.pointee == Type::Primitive(crate::core::types::primitive::PrimitiveType::Void) {
+                if matches!(a, Type::Pointer(_)) {
+                    return true;
+                }
+            }
+        }
+        // no numeric promotion in strict mode
         // str literals can be assigned 2 str type
         if matches!(a, Type::String) && matches!(b, Type::String) {
             return true;
