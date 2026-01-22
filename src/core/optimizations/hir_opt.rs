@@ -28,16 +28,10 @@ impl HirOptimizer {
         for item in &mut hir.items {
             if let HirItem::Function(f) = item {
                 if let Some(body) = &mut f.body {
-                    // do multiple passes until no more folding possible
-                    let mut changed = true;
-                    while changed {
-                        changed = false;
-                        let before = format!("{:?}", body);
+                    // do a fixed number of passes (enough for nested expressions)
+                    const MAX_PASSES: usize = 5;
+                    for _ in 0..MAX_PASSES {
                         self.constant_fold_stmts(body);
-                        let after = format!("{:?}", body);
-                        if before != after {
-                            changed = true;
-                        }
                     }
                 }
             }
@@ -130,7 +124,8 @@ impl HirOptimizer {
                 }
             }
             HirExpr::Block(b) => {
-                self.constant_fold_stmts(&mut b.stmts);
+                // don't call constant_fold_stmts here to avoid recursion cycle
+                // it will be handled by the outer constant_fold loop
                 if let Some(e) = &mut b.expr {
                     self.propagate_constants_expr(e, const_vars);
                 }
@@ -198,14 +193,14 @@ impl HirOptimizer {
                 if let HirExpr::Literal(lit) = &*i.condition {
                     if let HirLiteralKind::Bool(true) = lit.kind {
                         // condition is lawys true replace w/ tehn brnch
+                        // don't recurse here - let outer loop handle it to avoid infinite recursion
                         *expr = *i.then_branch.clone();
-                        self.constant_fold_expr(expr);
                         return;
                     } else if let HirLiteralKind::Bool(false) = lit.kind {
                         // condition is always fls replace w/ lese branch or void
                         if let Some(else_expr) = &i.else_branch {
+                            // don't recurse here - let outer loop handle it to avoid infinite recursion
                             *expr = *else_expr.clone();
-                            self.constant_fold_expr(expr);
                             return;
                         } else {
                             // no else brnch result is void

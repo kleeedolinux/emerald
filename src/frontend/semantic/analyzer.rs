@@ -11,12 +11,14 @@ use crate::frontend::semantic::trait_checker::TraitChecker;
 use crate::frontend::semantic::type_checker::TypeChecker;
 use crate::frontend::semantic::type_resolver::TypeResolver;
 use codespan::FileId;
+use std::sync::{Arc, Mutex};
 
 pub struct SemanticAnalyzer<'a> {
     reporter: &'a mut Reporter,
     file_id: FileId,
     module_registry: ModuleRegistry,
     dependency_graph: ModuleDependencyGraph,
+    analyzing_modules: Arc<Mutex<std::collections::HashSet<String>>>, // shared state to track modules currently being analyzed across all instances
 }
 
 impl<'a> SemanticAnalyzer<'a> {
@@ -26,6 +28,7 @@ impl<'a> SemanticAnalyzer<'a> {
             file_id,
             module_registry: ModuleRegistry::new(),
             dependency_graph: ModuleDependencyGraph::new(),
+            analyzing_modules: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
     }
 
@@ -325,6 +328,33 @@ impl<'a> SemanticAnalyzer<'a> {
         for require_path in &requires {
             self.dependency_graph.add_dependency(current_path.clone(), require_path.clone());
             
+            // check for cycle before analyzing (early detection)
+            if let Some(cycle) = self.dependency_graph.detect_cycles() {
+                let cycle_str = cycle.join(" -> ");
+                let diagnostic = crate::error::Diagnostic::error(
+                    crate::error::DiagnosticKind::SemanticError,
+                    ast.span,
+                    self.file_id,
+                    format!("Circular module dependency detected: {}", cycle_str),
+                );
+                self.reporter.add_diagnostic(diagnostic);
+                continue;
+            }
+            
+            // check if module already registered (already analyzed)
+            if self.module_registry.get_module(require_path).is_some() {
+                continue;
+            }
+            
+            // check if already analyzing this module (prevent infinite recursion)
+            {
+                let analyzing = self.analyzing_modules.lock().unwrap();
+                if analyzing.contains(require_path) {
+                    // cycle detected - module is already being analyzed
+                    continue;
+                }
+            }
+            
             // create resolver 4 this module
             let mut resolver = ModuleResolver::new(self.reporter);
             
@@ -335,12 +365,29 @@ impl<'a> SemanticAnalyzer<'a> {
             }
             
             if let Some((module_ast, module_file_id)) = resolver.resolve_module(require_path, self.file_id) {
-                // analyze the module
+                // mark as analyzing to prevent cycles (before recursive call)
+                {
+                    let mut analyzing = self.analyzing_modules.lock().unwrap();
+                    if !analyzing.insert(require_path.clone()) {
+                        // already analyzing this module - cycle detected
+                        continue;
+                    }
+                }
+                
+                // analyze the module (with shared analyzing_modules state)
                 let mut module_analyzer = SemanticAnalyzer::new(
                     self.reporter,
                     module_file_id,
                 );
+                // share the Arc (clone the Arc, not the HashSet)
+                module_analyzer.analyzing_modules = Arc::clone(&self.analyzing_modules);
                 let module_symbol_table = module_analyzer.analyze(&module_ast);
+                
+                // unmark after analysis completes (even on error)
+                {
+                    let mut analyzing = self.analyzing_modules.lock().unwrap();
+                    analyzing.remove(require_path);
+                }
 
                 // extract namespace from module if it has one
                 let namespace = self.extract_module_namespace(&module_ast);

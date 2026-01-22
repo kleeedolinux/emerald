@@ -17,7 +17,7 @@ impl HirLowerer {
     }
 
     pub fn lower(&mut self, ast: &Ast) -> Hir {
-        let items = ast
+        let items: Vec<_> = ast
             .items
             .iter()
             .filter_map(|item| self.lower_item(item))

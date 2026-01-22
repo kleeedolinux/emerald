@@ -1438,75 +1438,124 @@ impl MirOptimizer {
         }
         
         // merge blocks that only have a jump
-        let mut changed = true;
-        while changed {
-            changed = false;
+        let mut iterations = 0;
+        const MAX_ITERATIONS: usize = 10;
+        while iterations < MAX_ITERATIONS {
+            iterations += 1;
+            let block_count_before = func.basic_blocks.len();
+            
+            // collect all merges to do in this pass
+            let mut merges_to_do: Vec<(usize, usize)> = Vec::new();
+            let mut targets_to_skip: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            
             for bb_id in 0..func.basic_blocks.len() {
+                // skip blocks that are targets of merges (will be removed)
+                if targets_to_skip.contains(&bb_id) {
+                    continue;
+                }
+                
                 if let Some(bb) = func.get_block(bb_id) {
                     // chk if this block only has a jump
                     if bb.instructions.len() == 1 {
                         if let Instruction::Jump { target } = &bb.instructions[0] {
                             let target_bb_id = *target;
+                            
+                            // skip if target is already marked for merging
+                            if targets_to_skip.contains(&target_bb_id) {
+                                continue;
+                            }
+                            
                             // can merge if target has only 1 predecessor (this block)
+                            // and target doesn't have Phi nodes (Phi nodes need multiple predecessors)
+                            // and target is not the entry block
                             let can_merge = func.get_block(target_bb_id).map_or(false, |target_bb| {
-                                target_bb.predecessors.len() == 1 && target_bb.predecessors[0] == bb_id
+                                let has_phi = target_bb.instructions.iter().any(|inst| {
+                                    matches!(inst, Instruction::Phi { .. })
+                                });
+                                target_bb_id != func.entry_block
+                                    && !has_phi 
+                                    && target_bb.predecessors.len() == 1 
+                                    && target_bb.predecessors[0] == bb_id
                             });
                             
                             if can_merge {
-                                // merge: move target instructions 2 this block
-                                let mut target_insts = {
-                                    let target_bb = func.get_block_mut(target_bb_id).unwrap();
-                                    std::mem::take(&mut target_bb.instructions)
-                                };
-                                let new_successors = {
-                                    let target_bb = func.get_block(target_bb_id).unwrap();
-                                    target_bb.successors.clone()
-                                };
-                                
-                                let new_insts = {
-                                    let bb = func.get_block(bb_id).unwrap();
-                                    let mut insts = bb.instructions.clone();
-                                    insts.pop(); // remove jump
-                                    insts.append(&mut target_insts);
-                                    insts
-                                };
-                                
-                                {
-                                    let bb_mut = func.get_block_mut(bb_id).unwrap();
-                                    bb_mut.instructions = new_insts;
-                                    bb_mut.successors = new_successors;
-                                }
-                                
-                                // update predecessors of target's successors
-                                let successors = {
-                                    let bb = func.get_block(bb_id).unwrap();
-                                    bb.successors.clone()
-                                };
-                                for succ in successors {
-                                    if let Some(succ_bb) = func.get_block_mut(succ) {
-                                        // replace target_bb_id w/ bb_id in predecessors
-                                        if let Some(pos) = succ_bb.predecessors.iter().position(|p| *p == target_bb_id) {
-                                            succ_bb.predecessors[pos] = bb_id;
-                                        }
-                                    }
-                                }
-                                
-                                // mark target as unreachable (will be removed in next pass)
-                                {
-                                    let target_bb = func.get_block_mut(target_bb_id).unwrap();
-                                    target_bb.predecessors.clear();
-                                    target_bb.successors.clear();
-                                }
-                                changed = true;
-                                break;
+                                merges_to_do.push((bb_id, target_bb_id));
+                                targets_to_skip.insert(target_bb_id);
                             }
                         }
                     }
                 }
             }
             
-            // if we merged remove unreachable blocks again
-            if changed {
+            // if no merges found, we're done
+            if merges_to_do.is_empty() {
+                break;
+            }
+            
+            // perform all merges
+            for (bb_id, target_bb_id) in merges_to_do {
+                if func.get_block(bb_id).is_none() || func.get_block(target_bb_id).is_none() {
+                    continue;
+                }
+                
+                // merge: move target instructions 2 this block
+                let mut target_insts = {
+                    let target_bb = func.get_block_mut(target_bb_id).unwrap();
+                    std::mem::take(&mut target_bb.instructions)
+                };
+                let new_successors = {
+                    let target_bb = func.get_block(target_bb_id).unwrap();
+                    target_bb.successors.clone()
+                };
+                
+                let new_insts = {
+                    let bb = func.get_block(bb_id).unwrap();
+                    let mut insts = bb.instructions.clone();
+                    insts.pop(); // remove jump
+                    insts.append(&mut target_insts);
+                    insts
+                };
+                
+                {
+                    let bb_mut = func.get_block_mut(bb_id).unwrap();
+                    bb_mut.instructions = new_insts;
+                    bb_mut.successors = new_successors;
+                }
+                
+                // update predecessors of target's successors
+                let successors = {
+                    let bb = func.get_block(bb_id).unwrap();
+                    bb.successors.clone()
+                };
+                for succ in successors {
+                    if let Some(succ_bb) = func.get_block_mut(succ) {
+                        // replace target_bb_id w/ bb_id in predecessors
+                        if let Some(pos) = succ_bb.predecessors.iter().position(|p| *p == target_bb_id) {
+                            succ_bb.predecessors[pos] = bb_id;
+                        }
+                        // update Phi nodes that reference target_bb_id
+                        for inst in &mut succ_bb.instructions {
+                            if let Instruction::Phi { incoming, .. } = inst {
+                                for (_, pred_bb_id) in incoming.iter_mut() {
+                                    if *pred_bb_id == target_bb_id {
+                                        *pred_bb_id = bb_id;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // mark target as unreachable (will be removed in next pass)
+                {
+                    let target_bb = func.get_block_mut(target_bb_id).unwrap();
+                    target_bb.predecessors.clear();
+                    target_bb.successors.clear();
+                }
+            }
+            
+            // remove unreachable blocks and renumber once
+            {
                 // simple: just remove blocks w/ no predecessors (except entry)
                 func.basic_blocks.retain(|bb| {
                     bb.id == func.entry_block || !bb.predecessors.is_empty()
@@ -1557,6 +1606,11 @@ impl MirOptimizer {
                 func.basic_blocks = new_blocks;
                 if let Some(new_entry) = old_to_new.get(&func.entry_block) {
                     func.entry_block = *new_entry;
+                }
+                
+                // if we didn't reduce block count, no point continuing
+                if func.basic_blocks.len() >= block_count_before {
+                    break;
                 }
             }
         }
